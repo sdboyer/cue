@@ -692,21 +692,25 @@ func (b *builder) dispatch(f typeFunc, v cue.Value) {
 		b.setType("boolean", "")
 		// No need to call.
 
-	case cue.FloatKind, cue.NumberKind:
+	case cue.IntKind:
+		// integer	integer	int32	signed 	32 bits
+		// long		integer	int64	signed 	64 bits
+		b.setType("integer", extractFormat(v))
+		b.number(v)
+
+		// TODO: for JSON schema, consider adding multipleOf: 1.
+
+	case cue.FloatKind:
 		// TODO:
 		// Common   Name	type	format	Comments
 		// float	number	float
 		// double	number	double
-		b.setType("number", "") // may be overridden to integer
+		b.setType("number", extractFormat(v)) // may be overridden to integer
 		b.number(v)
 
-	case cue.IntKind:
-		// integer	integer	int32	signed 	32 bits
-		// long		integer	int64	signed 	64 bits
-		b.setType("integer", "") // may be overridden to integer
+	case cue.NumberKind:
+		b.setType("number", extractFormat(v)) // may be overridden to integer
 		b.number(v)
-
-		// TODO: for JSON schema, consider adding multipleOf: 1.
 
 	case cue.BytesKind:
 		// byte		string	byte	base64 	encoded characters
@@ -766,7 +770,7 @@ func (b *builder) object(v cue.Value) {
 			return
 		}
 
-	case cue.NoOp:
+	case cue.NoOp, cue.SelectorOp:
 		// TODO: extract format from specific type.
 
 	default:
@@ -1008,7 +1012,14 @@ func (b *builder) number(v cue.Value) {
 			return
 		}
 
+	case cue.AndOp:
+		b.number(a[0])
+		b.number(a[1])
+
 	case cue.NoOp:
+		if b.format == "" {
+			b.format = extractFormat(a[0])
+		}
 		// TODO: extract format from specific type.
 
 	default:
