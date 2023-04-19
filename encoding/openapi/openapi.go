@@ -82,10 +82,13 @@ type Config struct {
 	// if this option is used.
 	ExpandReferences bool
 
-	// MaxCycleDepth is a value that adds a maximum of iterations to stop evaluating
-	// structure cycles. The current behaviour does not have any stop condition, and it could
-	// generate infinite loops working with recursive values.
-	// The value should be big enough to fix the desire use case, but it must be used carefully.
+	// MaxCycleDepth specifies the maximum number of steps to search for structural
+	// cycles.
+	//
+	// This is a hack, not a general purpose solution to cycle detection. Use it
+	// with care. Set a value large enough to capture known use cases.
+	//
+	// NOTE This option does not exist in canonical cue-lang/cue.
 	MaxCycleDepth int
 }
 
