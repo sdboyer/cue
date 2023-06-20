@@ -20,7 +20,6 @@ import (
 	"context"
 	"fmt"
 	"io/fs"
-	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
@@ -142,7 +141,7 @@ func TestX(t *testing.T) {
 	for _, f := range a.Files {
 		name := filepath.Join(tmpdir, f.Name)
 		check(os.MkdirAll(filepath.Dir(name), 0777))
-		check(ioutil.WriteFile(name, f.Data, 0666))
+		check(os.WriteFile(name, f.Data, 0666))
 	}
 
 	cwd, err := os.Getwd()
@@ -163,8 +162,7 @@ func TestX(t *testing.T) {
 		args, err := shlex.Split(cmd)
 		check(err)
 
-		c, err := New(args[1:])
-		check(err)
+		c, _ := New(args[1:])
 		b := &bytes.Buffer{}
 		c.SetOutput(b)
 		err = c.Run(context.Background())
@@ -203,7 +201,7 @@ func TestMain(m *testing.M) {
 
 // homeEnvName extracts the logic from os.UserHomeDir to get the
 // name of the environment variable that should be used when
-// seting the user's home directory
+// setting the user's home directory
 func homeEnvName() string {
 	switch goruntime.GOOS {
 	case "windows":
@@ -219,10 +217,7 @@ func mainTestStdinPipe() error {
 	// Like MainTest, but sets stdin to a pipe,
 	// to emulate stdin reads like a terminal.
 	inTest = true
-	cmd, err := New(os.Args[1:])
-	if err != nil {
-		return err
-	}
+	cmd, _ := New(os.Args[1:])
 	pr, pw, err := os.Pipe()
 	if err != nil {
 		return err

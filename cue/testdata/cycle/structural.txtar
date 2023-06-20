@@ -532,15 +532,15 @@ n2: n1 & {a: n1}
 n3: n1 & {n1}
 n4: n1 & {x: n1 & {y: n1 & {z: int}}}
 -- out/eval/stats --
-Leaks:  17
-Freed:  791
-Reused: 779
-Allocs: 29
-Retain: 61
+Leaks:  16
+Freed:  794
+Reused: 782
+Allocs: 28
+Retain: 65
 
-Unifications: 622
-Conjuncts:    1219
-Disjuncts:    837
+Unifications: 624
+Conjuncts:    1221
+Disjuncts:    843
 -- out/eval --
 Errors:
 a1.f.0: structural cycle
@@ -1315,11 +1315,17 @@ Result:
   listOptOK: (struct){
     list: (struct){
       head: (int){ int }
+      tail?: (_|_){
+        // [structural cycle] listOptOK.list.tail: structural cycle
+      }
     }
     a: (struct){
       head: (int){ 3 }
       tail: (struct){
         head: (int){ 2 }
+        tail?: (_|_){
+          // [structural cycle] listOptOK.a.tail.tail: structural cycle
+        }
       }
     }
   }

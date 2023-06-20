@@ -16,16 +16,21 @@ package cmd
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"os"
-	"strings"
+	"runtime"
 
 	"github.com/spf13/cobra"
 
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/cuecontext"
 	"cuelang.org/go/cue/errors"
-	"cuelang.org/go/cue/token"
+	"cuelang.org/go/cue/interpreter/wasm"
+	"cuelang.org/go/cue/stats"
+	"cuelang.org/go/internal/core/adt"
+	"cuelang.org/go/internal/encoding"
+	"cuelang.org/go/internal/filetypes"
 )
 
 // TODO: commands
@@ -42,19 +47,82 @@ import (
 
 type runFunction func(cmd *Command, args []string) error
 
+func statsEncoder(cmd *Command) *encoding.Encoder {
+	file := os.Getenv("CUE_STATS_FILE")
+	if file == "" {
+		return nil
+	}
+
+	stats, err := filetypes.ParseFile(file, filetypes.Export)
+	exitOnErr(cmd, err, true)
+
+	statsEnc, err := encoding.NewEncoder(stats, &encoding.Config{
+		Stdout: cmd.OutOrStderr(),
+		Force:  true,
+	})
+	exitOnErr(cmd, err, true)
+
+	return statsEnc
+}
+
+// Stats expands [stats.Counts] with counters obtained from other sources,
+// such as the Go runtime. The stats are grouped by category to clarify their source.
+type Stats struct {
+	// CUE groups stats obtained from the CUE evaluator.
+	CUE stats.Counts
+
+	// Go groups stats obtained from the Go runtime.
+	Go struct {
+		AllocBytes   uint64
+		AllocObjects uint64
+	}
+}
+
 func mkRunE(c *Command, f runFunction) func(*cobra.Command, []string) error {
 	return func(cmd *cobra.Command, args []string) error {
 		c.Command = cmd
+
+		statsEnc := statsEncoder(c)
+
 		err := f(c, args)
-		if err != nil {
-			exitOnErr(c, err, true)
+
+		if statsEnc != nil {
+			var stats Stats
+			stats.CUE = adt.TotalStats()
+
+			// Fill in the runtime stats, which are cumulative counters.
+			// Since in practice the number of allocations isn't fully deterministic,
+			// due to the inherent behavior of memory pools like sync.Pool,
+			// we support supplying MemStats as a JSON file in the tests.
+			var m runtime.MemStats
+			if name := os.Getenv("CUE_TEST_MEMSTATS"); name != "" && inTest {
+				bs, err := os.ReadFile(name)
+				if err != nil {
+					return err
+				}
+				if err := json.Unmarshal(bs, &m); err != nil {
+					return err
+				}
+			} else {
+				runtime.ReadMemStats(&m)
+			}
+			stats.Go.AllocBytes = m.TotalAlloc
+			stats.Go.AllocObjects = m.Mallocs
+
+			statsEnc.Encode(c.ctx.Encode(stats))
+			statsEnc.Close()
 		}
 		return err
 	}
 }
 
-// newRootCmd creates the base command when called without any subcommands
-func newRootCmd() *Command {
+// TODO(mvdan): remove this error return at some point.
+// The API could also be made clearer if we want to keep cmd public,
+// such as not leaking *cobra.Command via embedding.
+
+// New creates the top-level command.
+// The returned error is always nil, and is a historical artifact.
+func New(args []string) (*Command, error) {
 	cmd := &cobra.Command{
 		Use:   "cue",
 		Short: "cue emits configuration files to user-defined commands.",
@@ -76,17 +144,27 @@ configuration for further processing. For more information on defining commands
 run 'cue help cmd' or go to cuelang.org/pkg/cmd.
 
 For more information on writing CUE configuration files see cuelang.org.`,
-		// Uncomment the following line if your bare application
-		// has an action associated with it:
-		//	Run: func(cmd *cobra.Command, args []string) { },
 
-		SilenceUsage: true,
+		// ArbitraryArgs allows us to forward the top-level RunE to cmdCmd.RunE,
+		// which supports `cue mycmd` as a short-cut for `cue cmd mycmd`.
+		// Without ArbitraryArgs, cobra fails with "unknown command" errors.
+		Args: cobra.ArbitraryArgs,
+
+		// We print errors ourselves in Main, which allows for ErrPrintedError.
+		// Similarly, we don't want to print the entire help text on any error.
+		// We can explicitly trigger help on certain errors via pflag.ErrHelp.
+		SilenceErrors: true,
+		SilenceUsage:  true,
+
+		// We currently support top-level custom commands like `cue mycmd` as an alias
+		// for `cue cmd mycmd`, so any sub-command suggestions might be confusing.
+		DisableSuggestions: true,
 	}
 
 	c := &Command{
 		Command: cmd,
 		root:    cmd,
-		ctx:     cuecontext.New(),
+		ctx:     cuecontext.New(cuecontext.Interpreter(wasm.New())),
 	}
 
 	cmdCmd := newCmdCmd(c)
@@ -118,7 +196,18 @@ For more information on writing CUE configuration files see cuelang.org.`,
 		cmd.AddCommand(sub)
 	}
 
-	return c
+	// Cobra's --help flag shows up in help text by default, which is unnecessary.
+	cmd.InitDefaultHelpFlag()
+	cmd.Flag("help").Hidden = true
+
+	// "help" is treated as a special command by cobra.
+	cmd.SetHelpCommand(newHelpCmd(c))
+
+	// For `cue mycmd` to be a shortcut for `cue cmd mycmd`.
+	cmd.RunE = cmdCmd.RunE
+
+	cmd.SetArgs(args)
+	return c, nil
 }
 
 // MainTest is like Main, runs the cue tool and returns the code for passing to os.Exit.
@@ -126,6 +215,8 @@ func MainTest() int {
 	// Setting inTest causes filenames printed in error messages
 	// to be normalized so the output looks the same on Unix
 	// as Windows.
+	// TODO: replace with testing.Testing once we can require Go 1.21 or later,
+	// per the accepted proposal at https://go.dev/issue/52600.
 	inTest = true
 	return Main()
 }
@@ -133,8 +224,8 @@ func MainTest() int {
 // Main runs the cue tool and returns the code for passing to os.Exit.
 func Main() int {
 	cwd, _ := os.Getwd()
-	err := mainErr(context.Background(), os.Args[1:])
-	if err != nil {
+	cmd, _ := New(os.Args[1:])
+	if err := cmd.Run(context.Background()); err != nil {
 		if err != ErrPrintedError {
 			errors.Print(os.Stderr, err, &errors.Config{
 				Cwd:     cwd,
@@ -144,14 +235,6 @@ func Main() int {
 		return 1
 	}
 	return 0
-}
-
-func mainErr(ctx context.Context, args []string) error {
-	cmd, err := New(args)
-	if err != nil {
-		return err
-	}
-	return cmd.Run(ctx)
 }
 
 type Command struct {
@@ -232,134 +315,6 @@ func recoverError(err *error) {
 		panic(e)
 	}
 	// We use panic to escape, instead of os.Exit
-}
-
-func New(args []string) (cmd *Command, err error) {
-	defer recoverError(&err)
-
-	cmd = newRootCmd()
-	rootCmd := cmd.root
-	if len(args) == 0 {
-		return cmd, nil
-	}
-	rootCmd.SetArgs(args)
-
-	var sub = map[string]*subSpec{
-		"cmd": {commandSection, cmd.cmd},
-		// "serve": {"server", nil},
-		// "fix":   {"fix", nil},
-	}
-
-	// handle help, --help and -h on root 'cue' command
-	if args[0] == "help" || args[0] == "--help" || args[0] == "-h" {
-		// Allow errors.
-		_ = addSubcommands(cmd, sub, args[1:], true)
-		return cmd, nil
-	}
-
-	if _, ok := sub[args[0]]; ok {
-		return cmd, addSubcommands(cmd, sub, args, false)
-	}
-
-	// TODO: clean this up once we either use Cobra properly or when we remove
-	// it.
-	err = cmd.cmd.ParseFlags(args)
-	if err != nil {
-		return nil, err
-	}
-
-	args = cmd.cmd.Flags().Args()
-	rootCmd.SetArgs(args)
-
-	if c, _, err := rootCmd.Find(args); err == nil && c != nil {
-		return cmd, nil
-	}
-
-	if !isCommandName(args[0]) {
-		return cmd, nil // Forces unknown command message from Cobra.
-	}
-
-	tools, err := buildTools(cmd, args[1:])
-	if err != nil {
-		return cmd, err
-	}
-	_, err = addCustom(cmd, rootCmd, commandSection, args[0], tools)
-	if err != nil {
-		err = errors.Newf(token.NoPos,
-			`%s %q is not defined
-Ensure commands are defined in a "_tool.cue" file.
-Run 'cue help' to show available commands.`,
-			commandSection, args[0],
-		)
-		return cmd, err
-	}
-	return cmd, nil
-}
-
-type subSpec struct {
-	name string
-	cmd  *cobra.Command
-}
-
-func addSubcommands(cmd *Command, sub map[string]*subSpec, args []string, isHelp bool) error {
-	if len(args) > 0 {
-		if _, ok := sub[args[0]]; ok {
-			oldargs := []string{args[0]}
-			args = args[1:]
-
-			// Check for 'cue cmd --help|-h'
-			// it is behaving differently for this one command, cobra does not seem to pick it up
-			// See issue #340
-			if len(args) == 1 && (args[0] == "--help" || args[0] == "-h") {
-				return cmd.Usage()
-			}
-
-			if !isHelp {
-				err := cmd.cmd.ParseFlags(args)
-				if err != nil {
-					return err
-				}
-				args = cmd.cmd.Flags().Args()
-				cmd.root.SetArgs(append(oldargs, args...))
-			}
-		}
-	}
-
-	if len(args) > 0 {
-		if !isCommandName(args[0]) {
-			return nil // Forces unknown command message from Cobra.
-		}
-		args = args[1:]
-	}
-
-	tools, err := buildTools(cmd, args)
-	if err != nil {
-		return err
-	}
-
-	// TODO: for now we only allow one instance. Eventually, we can allow
-	// more if they all belong to the same package and we merge them
-	// before computing commands.
-	for _, spec := range sub {
-		commands := tools.Lookup(spec.name)
-		if !commands.Exists() {
-			return nil
-		}
-		i, err := commands.Fields()
-		if err != nil {
-			return errors.Newf(token.NoPos, "could not create command definitions: %v", err)
-		}
-		for i.Next() {
-			_, _ = addCustom(cmd, spec.cmd, spec.name, i.Label(), tools)
-		}
-	}
-	return nil
-}
-
-func isCommandName(s string) bool {
-	return !strings.Contains(s, `/\`) &&
-		!strings.HasPrefix(s, ".") &&
-		!strings.HasSuffix(s, ".cue")
 }
 
 type panicError struct {

@@ -65,17 +65,18 @@ g1: 1
 }
 -- out/eval/stats --
 Leaks:  0
-Freed:  9
-Reused: 6
+Freed:  11
+Reused: 8
 Allocs: 3
 Retain: 0
 
-Unifications: 9
-Conjuncts:    16
-Disjuncts:    9
+Unifications: 11
+Conjuncts:    19
+Disjuncts:    11
 -- out/eval --
 (struct){
   a: (struct){
+    foo?: (string){ string }
   }
   b: (struct){
     foo: (string){ "foo" }
@@ -84,7 +85,8 @@ Disjuncts:    9
     foo: (string){ "foo" }
   }
   d: (struct){
+    foo?: (string){ "bar" }
   }
   g1: (int){ 1 }
-  g2: (int){ 2 }
+  g2?: (int){ 2 }
 }

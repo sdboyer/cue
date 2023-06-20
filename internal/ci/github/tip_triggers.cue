@@ -16,20 +16,28 @@ package github
 
 // The tip_triggers workflow. This fires for each new commit that hits the
 // default branch.
-tip_triggers: _base.#bashWorkflow & {
+workflows: tip_triggers: _repo.bashWorkflow & {
 
 	name: "Triggers on push to tip"
-	on: push: branches: [_#defaultBranch]
+	on: push: branches: [_repo.defaultBranch]
 	jobs: push: {
-		"runs-on": _#linuxMachine
+		"runs-on": _repo.linuxMachine
+		if:        "${{github.repository == '\(_repo.githubRepositoryPath)'}}"
 		steps: [
-			{
-				name: "Rebuild tip.cuelang.org"
-				run:  "\(_base.#curl) -X POST -d {} https://api.netlify.com/build_hooks/${{ secrets.CUELANGORGTIPREBUILDHOOK }}"
+			_repo.repositoryDispatch & {
+				name:                  "Trigger tip.cuelang.org deploy"
+				#githubRepositoryPath: _repo.cuelangRepositoryPath
+				#arg: {
+					event_type: "Rebuild tip against ${GITHUB_SHA}"
+					client_payload: {
+						type: "rebuild_tip"
+					}
+				}
 			},
-			_base.#repositoryDispatch & {
-				name:           "Trigger unity build"
-				#repositoryURL: "https://github.com/cue-unity/unity"
+			_repo.repositoryDispatch & {
+				name:                          "Trigger unity build"
+				#githubRepositoryPath:         _repo.unityRepositoryPath
+				#botGitHubUserTokenSecretsKey: "PORCUEPINE_GITHUB_PAT"
 				#arg: {
 					event_type: "Check against ${GITHUB_SHA}"
 					client_payload: {

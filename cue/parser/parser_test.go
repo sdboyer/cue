@@ -67,17 +67,18 @@ func TestParse(t *testing.T) {
 		`, `true, false, null, for, in, if, let, if`,
 	}, {
 		"keywords as labels",
-		`if: 0, for: 1, in: 2, where: 3, div: 4, quo: 5
-		for: if: let: 3
+		`if: 0, for: 1, in: 2, where: 3, div: 4, quo: 5, func: 6
+		for: if: func: let: 3
 		`,
-		`if: 0, for: 1, in: 2, where: 3, div: 4, quo: 5, for: {if: {let: 3}}`,
+		`if: 0, for: 1, in: 2, where: 3, div: 4, quo: 5, func: 6, for: {if: {func: {let: 3}}}`,
 	}, {
 		"keywords as alias",
 		`if=foo: 0
 		for=bar: 2
 		let=bar: 3
+		func=baz: 4
 		`,
-		`if=foo: 0, for=bar: 2, let=bar: 3`,
+		`if=foo: 0, for=bar: 2, let=bar: 3, func=baz: 4`,
 	}, {
 		"json",
 		`{
@@ -117,9 +118,13 @@ func TestParse(t *testing.T) {
 		 b?: "2"
 		 c?: 3
 
+		 d!: 2
+		 e: f!: 3
+
 		 "g\("en")"?: 4
+		 "h\("en")"!: 4
 		`,
-		`a: true, b?: "2", c?: 3, "g\("en")"?: 4`,
+		`a: true, b?: "2", c?: 3, d!: 2, e: {f!: 3}, "g\("en")"?: 4, "h\("en")"!: 4`,
 	}, {
 		"definition",
 		`#Def: {
@@ -370,8 +375,11 @@ func TestParse(t *testing.T) {
 			a: {
 				(a.b)
 			}
+
+			(x)?: 1
+			y: (x)!: 2
 		}`,
-		`{(x): {a: int}, x: "foo", a: {(a.b)}}`,
+		`{(x): {a: int}, x: "foo", a: {(a.b)}, (x)?: 1, y: {(x)!: 2}}`,
 	}, {
 		"foo",
 		`[
@@ -606,13 +614,13 @@ bar: 2
 		in: `
 		struct: {
 			// This is a comment
-		
+
 			// This is a comment
-		
+
 			// Another comment
 			something: {
 			}
-		
+
 			// extra comment
 		}`,
 		out: `struct: {<[0// This is a comment] [0// This is a comment] [d0// Another comment] [d5// extra comment] something: {}>}`,
@@ -636,12 +644,12 @@ bar: 2
 		in: `
 		funcArg1: foo(
 			{},
-	
+
 			// Comment1
 
 			// Comment2
 			{}
-	
+
 			// Comment3
 		)`,
 		out: "funcArg1: foo(<[1// Comment1] {}>, <[d0// Comment2] [d1// Comment3] {}>)",
@@ -654,12 +662,27 @@ bar: 2
 			}
 			`,
 		out: "frontStyle: {\"key\": \"value\", \"key2\": \"value2\", \"foo\": bar}",
+	}, {
+		desc: "function types",
+		in: `
+			f0: func(): int
+			f1: func(int): int
+			f2: func(int, string): int
+			f3: func({a: int, b: string}): bool
+			f4: func(bool, func(int, string): int): string
+			f5: func(int, int): func(bool, bool): bool
+			f6: func(func(bool, bool): bool, func(string, string): string): func(int, func(int, string): int): func(int, string): int
+		`,
+		out: "f0: func(): int, f1: func(int): int, f2: func(int, string): int, f3: func({a: int, b: string}): bool, f4: func(bool, func(int, string): int): string, f5: func(int, int): func(bool, bool): bool, f6: func(func(bool, bool): bool, func(string, string): string): func(int, func(int, string): int): func(int, string): int",
 	}}
 	for _, tc := range testCases {
 		t.Run(tc.desc, func(t *testing.T) {
 			mode := []Option{AllErrors}
 			if strings.Contains(tc.desc, "comments") {
 				mode = append(mode, ParseComments)
+			}
+			if strings.Contains(tc.desc, "function") {
+				mode = append(mode, ParseFuncs)
 			}
 			f, err := ParseFile("input", tc.in, mode...)
 			got := debugStr(f)
@@ -681,8 +704,6 @@ func TestStrict(t *testing.T) {
 			`a b c: 2`},
 		{"reserved identifiers",
 			`__foo: 3`},
-		{"old-style definition",
-			`foo :: 3`},
 		{"old-style alias 1",
 			`X=3`},
 		{"old-style alias 2",

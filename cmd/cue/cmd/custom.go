@@ -19,7 +19,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
-	"io/ioutil"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -39,9 +39,7 @@ import (
 	"cuelang.org/go/tools/flow"
 )
 
-const (
-	commandSection = "command"
-)
+const commandSection = "command"
 
 func lookupString(obj cue.Value, key, def string) string {
 	str, err := obj.Lookup(key).String()
@@ -60,7 +58,28 @@ func splitLine(s string) (line, tail string) {
 	return
 }
 
-func addCustom(c *Command, parent *cobra.Command, typ, name string, tools *cue.Instance) (*cobra.Command, error) {
+// addCustomCommands iterates over all commands defined under field typ
+// and adds them as cobra subcommands to cmd.
+// The func is only used in `cue help cmd`, which doesn't show errors.
+func addCustomCommands(c *Command, cmd *cobra.Command, typ string, tools *cue.Instance) {
+	commands := tools.Lookup(typ)
+	if !commands.Exists() {
+		return
+	}
+	fields, err := commands.Fields()
+	if err != nil {
+		return
+	}
+	for fields.Next() {
+		sub, err := customCommand(c, commandSection, fields.Label(), tools)
+		if err == nil {
+			cmd.AddCommand(sub)
+		}
+	}
+}
+
+// customCommand creates a cobra.Command out of a CUE command definition.
+func customCommand(c *Command, typ, name string, tools *cue.Instance) (*cobra.Command, error) {
 	if tools == nil {
 		return nil, errors.New("no commands defined")
 	}
@@ -116,7 +135,6 @@ outer:
 			return doTasks(cmd, typ, name, tools)
 		}),
 	}
-	parent.AddCommand(sub)
 
 	// TODO: implement var/flag handling.
 	return sub, nil
@@ -250,7 +268,7 @@ func newTestServerCmd(v cue.Value) (itask.Runner, error) {
 	testOnce.Do(func() {
 		s := httptest.NewServer(http.HandlerFunc(
 			func(w http.ResponseWriter, req *http.Request) {
-				data, _ := ioutil.ReadAll(req.Body)
+				data, _ := io.ReadAll(req.Body)
 				d := map[string]interface{}{
 					"data": string(data),
 					"when": "now",

@@ -213,9 +213,22 @@ var selectorTests = []struct {
 	isString:     true,
 	isConstraint: true,
 }, {
-	sel:          Def("foo").Optional(),
+	sel:          Str("foo").Required(),
+	stype:        StringLabel | RequiredConstraint,
+	string:       "foo!",
+	unquoted:     "foo",
+	isString:     true,
+	isConstraint: true,
+}, {
+	sel:          Def("foo").Required().Optional(),
 	stype:        DefinitionLabel | OptionalConstraint,
 	string:       "#foo?",
+	isDefinition: true,
+	isConstraint: true,
+}, {
+	sel:          Def("foo").Optional().Required(),
+	stype:        DefinitionLabel | RequiredConstraint,
+	string:       "#foo!",
 	isDefinition: true,
 	isConstraint: true,
 }, {
@@ -300,7 +313,7 @@ func TestSelectorTypeString(t *testing.T) {
 	if got, want := (StringLabel | OptionalConstraint).String(), "StringLabel|OptionalConstraint"; got != want {
 		t.Errorf("unexpected SelectorType.String result; got %q want %q", got, want)
 	}
-	if got, want := SelectorType(255).String(), "StringLabel|IndexLabel|DefinitionLabel|HiddenLabel|HiddenDefinitionLabel|OptionalConstraint|PatternConstraint"; got != want {
+	if got, want := SelectorType(255).String(), "StringLabel|IndexLabel|DefinitionLabel|HiddenLabel|HiddenDefinitionLabel|OptionalConstraint|RequiredConstraint|PatternConstraint"; got != want {
 		t.Errorf("unexpected SelectorType.String result; got %q want %q", got, want)
 	}
 }

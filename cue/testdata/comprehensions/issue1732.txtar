@@ -126,11 +126,11 @@ Leaks:  4
 Freed:  118
 Reused: 105
 Allocs: 17
-Retain: 10
+Retain: 19
 
 Unifications: 112
 Conjuncts:    249
-Disjuncts:    126
+Disjuncts:    133
 -- out/eval --
 (struct){
   networkingv1: (struct){
@@ -180,10 +180,6 @@ Disjuncts:    126
     #SomeConfig: (_|_){
       // [incomplete] common.#SomeConfig: incomplete bool: bool:
       //     ./in.cue:41:12
-      foo: (_|_){
-        // [incomplete] common.#SomeConfig: incomplete bool: bool:
-        //     ./in.cue:41:12
-      }
       enabled: (bool){ bool }
     }
   }
@@ -203,10 +199,6 @@ Disjuncts:    126
     auth0: (_|_){
       // [incomplete] #Config.auth0: incomplete bool: bool:
       //     ./in.cue:41:12
-      foo: (_|_){
-        // [incomplete] #Config.auth0: incomplete bool: bool:
-        //     ./in.cue:41:12
-      }
       enabled: (bool){ bool }
     }
     charts: (#struct){
@@ -245,10 +237,6 @@ Disjuncts:    126
     auth0: (_|_){
       // [incomplete] #Flux.auth0: incomplete bool: bool:
       //     ./in.cue:41:12
-      foo: (_|_){
-        // [incomplete] #Flux.auth0: incomplete bool: bool:
-        //     ./in.cue:41:12
-      }
       enabled: (bool){ bool }
     }
     charts: (#struct){

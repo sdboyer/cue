@@ -17,7 +17,7 @@ package cue
 import (
 	"bytes"
 	"fmt"
-	"io/ioutil"
+	"io"
 	"math"
 	"math/big"
 	"reflect"
@@ -31,6 +31,8 @@ import (
 	"cuelang.org/go/internal/astinternal"
 	"cuelang.org/go/internal/core/adt"
 	"cuelang.org/go/internal/core/debug"
+	"cuelang.org/go/internal/cuetest"
+	"cuelang.org/go/internal/tdtest"
 )
 
 func getInstance(t *testing.T, body string) *Instance {
@@ -460,6 +462,14 @@ func TestFloat(t *testing.T) {
 		fmt:     'g',
 		kind:    IntKind,
 	}, {
+		value:   "0.0",
+		float:   "0.0",
+		mant:    "0",
+		exp:     -1,
+		float64: 0.0,
+		fmt:     'g',
+		kind:    FloatKind,
+	}, {
 		value:   "1.0",
 		float:   "1.0",
 		mant:    "10",
@@ -600,7 +610,7 @@ func TestString(t *testing.T) {
 
 			r, err := getInstance(t, tc.value).Value().Reader()
 			checkFatal(t, err, tc.err, "init")
-			b, _ = ioutil.ReadAll(r)
+			b, _ = io.ReadAll(r)
 			if got := string(b); got != tc.str {
 				t.Errorf("Reader: got %q; want %q", got, tc.str)
 			}
@@ -790,6 +800,9 @@ func TestFields(t *testing.T) {
 		if step1.value > 100 {
 		}`,
 		err: "undefined field: value",
+	}, {
+		value: `{a!: 1, b?: 2, c: 3}`,
+		err:   "a: field is required but not present",
 	}}
 	for _, tc := range testCases {
 		t.Run(tc.value, func(t *testing.T) {
@@ -837,7 +850,7 @@ func TestAllFields(t *testing.T) {
 		err   string
 	}{{
 		value: `{a:1,"_b":2,c:3,_d:4}`,
-		res:   "{a:1,_b:2,c:3,_d:4,}",
+		res:   `{a:1,"_b":2,c:3,_d:4,}`,
 	}, {
 		value: `{_a:"a"}`,
 		res:   `{_a:"a",}`,
@@ -848,6 +861,9 @@ func TestAllFields(t *testing.T) {
 		// Issue #1879
 		value: `{a: 1, if false { b: 2 }}`,
 		res:   `{a:1,}`,
+	}, {
+		value: `{a!:1,b?:2,c:3}`,
+		res:   `{a!:1,b?:2,c:3,}`,
 	}}
 	for _, tc := range testCases {
 		t.Run(tc.value, func(t *testing.T) {
@@ -859,10 +875,7 @@ func TestAllFields(t *testing.T) {
 
 			buf := []byte{'{'}
 			for iter.Next() {
-				buf = append(buf, iter.Label()...)
-				if iter.IsOptional() {
-					buf = append(buf, '?')
-				}
+				buf = append(buf, iter.Selector().String()...)
 				buf = append(buf, ':')
 				b, err := iter.Value().MarshalJSON()
 				checkFatal(t, err, tc.err, "Obj.At")
@@ -872,6 +885,45 @@ func TestAllFields(t *testing.T) {
 			buf = append(buf, '}')
 			if got := string(buf); got != tc.res {
 				t.Errorf("got %v; want %v", got, tc.res)
+			}
+		})
+	}
+}
+
+func TestFieldType(t *testing.T) {
+	testCases := []struct {
+		value string
+		want  string
+	}{{
+		value: `{a:1,"_b":2,c:3,_d:4,#def: 1}`,
+		want: `
+		StringLabel
+		StringLabel
+		StringLabel
+		HiddenLabel
+		DefinitionLabel`,
+	}, {
+		value: `{a!:1,b?:2,c:3}`,
+		want: `
+		StringLabel|RequiredConstraint
+		StringLabel|OptionalConstraint
+		StringLabel`,
+	}}
+	for _, tc := range testCases {
+		t.Run(tc.value, func(t *testing.T) {
+			obj := getInstance(t, tc.value).Value()
+
+			iter, err := obj.Fields(All())
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			b := &strings.Builder{}
+			for iter.Next() {
+				fmt.Fprint(b, "\n\t\t", iter.FieldType())
+			}
+			if got := b.String(); got != tc.want {
+				t.Errorf("got:%v\nwant:%v", got, tc.want)
 			}
 		})
 	}
@@ -887,6 +939,11 @@ func TestLookup(t *testing.T) {
 	[string]: int64
 } & #V
 v: #X
+
+a: {
+	b!: 1
+	c: 2
+}
 `)
 	if err != nil {
 		t.Fatalf("compile: %v", err)
@@ -896,48 +953,74 @@ v: #X
 	// 	log.Fatalf("parseExpr: %v", err)
 	// }
 	// v := inst.Eval(expr)
-	testCases := []struct {
-		ref  []string
-		raw  string
-		eval string
-	}{{
-		ref:  []string{"v", "x"},
-		raw:  ">=-9223372036854775808 & <=9223372036854775807 & int",
-		eval: "int64",
+
+	type testCase struct {
+		ref    []string
+		result string
+		syntax string
+	}
+	testCases := []testCase{{
+		ref: []string{"a"},
+		result: `{
+	b!: 1
+	c:  2
+}`,
+		syntax: "{b!: 1, c: 2}",
+	}, {
+		// Allow descending into structs even if it has a required field error.
+		ref:    []string{"a", "c"},
+		result: "2",
+		syntax: "2",
+	}, {
+		ref:    []string{"a", "b"},
+		result: "_|_ // a.b: field is required but not present",
+		syntax: "1",
+	}, {
+		ref:    []string{"v", "x"},
+		result: "int64",
+		syntax: "int64",
 	}}
 	for _, tc := range testCases {
-		v := inst.Lookup(tc.ref...)
+		t.Run("", func(t *testing.T) {
+			v := inst.Lookup(tc.ref...)
 
-		if got := fmt.Sprintf("%#v", v); got != tc.raw {
-			t.Errorf("got %v; want %v", got, tc.raw)
-		}
-
-		got := fmt.Sprint(astinternal.DebugStr(v.Eval().Syntax()))
-		if got != tc.eval {
-			t.Errorf("got %v; want %v", got, tc.eval)
-		}
-
-		v = inst.Lookup()
-		for _, ref := range tc.ref {
-			s, err := v.Struct()
-			if err != nil {
-				t.Fatal(err)
+			if got := fmt.Sprintf("%+v", v); got != tc.result {
+				t.Errorf("got %v; want %v", got, tc.result)
 			}
-			fi, err := s.FieldByName(ref, false)
-			if err != nil {
-				t.Fatal(err)
+
+			got := fmt.Sprint(astinternal.DebugStr(v.Eval().Syntax()))
+			if got != tc.syntax {
+				t.Errorf("got %v; want %v", got, tc.syntax)
 			}
-			v = fi.Value
-		}
 
-		if got := fmt.Sprintf("%#v", v); got != tc.raw {
-			t.Errorf("got %v; want %v", got, tc.raw)
-		}
+			v = inst.Lookup()
+			for _, ref := range tc.ref {
+				s, err := v.Struct()
+				if err != nil {
+					t.Fatal(err)
+				}
+				fi, err := s.FieldByName(ref, false)
+				if err != nil {
+					t.Fatal(err)
+				}
+				v = fi.Value
 
-		got = fmt.Sprint(astinternal.DebugStr(v.Eval().Syntax()))
-		if got != tc.eval {
-			t.Errorf("got %v; want %v", got, tc.eval)
-		}
+				// Struct gets all fields. Skip tests with optional fields,
+				// as the result will differ.
+				if v.v.ArcType != adt.ArcMember {
+					return
+				}
+			}
+
+			if got := fmt.Sprintf("%+v", v); got != tc.result {
+				t.Errorf("got %v; want %v", got, tc.result)
+			}
+
+			got = fmt.Sprint(astinternal.DebugStr(v.Eval().Syntax()))
+			if got != tc.syntax {
+				t.Errorf("got %v; want %v", got, tc.syntax)
+			}
+		})
 	}
 }
 
@@ -2028,14 +2111,15 @@ func TestSubsumes(t *testing.T) {
 }
 
 func TestUnify(t *testing.T) {
-	a := []string{"a"}
-	b := []string{"b"}
-	testCases := []struct {
+	a := "a"
+	b := "b"
+	type testCase struct {
 		value string
-		pathA []string
-		pathB []string
+		pathA string
+		pathB string
 		want  string
-	}{{
+	}
+	testCases := []testCase{{
 		value: `4`,
 		want:  `4`,
 	}, {
@@ -2063,21 +2147,38 @@ func TestUnify(t *testing.T) {
 		pathA: a,
 		pathB: b,
 		want:  `{"a":"foo"}`,
+	}, {
+		// Issue #2325: let should not result in a closedness error.
+		value: `#T: {
+			...
+		}
+		b: {
+			let foobar = {}
+			 _fb: foobar
+		}`,
+		pathA: "#T",
+		pathB: b,
+		want:  `{}`,
+	}, {
+		value: `
+		a: #A: "foo"
+		#B: {...}
+		`,
+		pathA: a,
+		pathB: "#B",
+		want:  `{}`,
 	}}
-	for _, tc := range testCases {
-		t.Run(tc.value, func(t *testing.T) {
-			v := getInstance(t, tc.value).Value()
-			x := v.Lookup(tc.pathA...)
-			y := v.Lookup(tc.pathB...)
-			b, err := x.Unify(y).MarshalJSON()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if got := string(b); got != tc.want {
-				t.Errorf("got %v; want %v", got, tc.want)
-			}
-		})
-	}
+	// TODO(tdtest): use cuetest.Run when supported.
+	tdtest.Run(t, testCases, func(t *cuetest.T, tc *testCase) {
+		v := getInstance(t.T, tc.value).Value()
+		x := v.LookupPath(ParsePath(tc.pathA))
+		y := v.LookupPath(ParsePath(tc.pathB))
+		b, err := x.Unify(y).MarshalJSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Equal(string(b), tc.want)
+	})
 }
 
 func TestEquals(t *testing.T) {
@@ -2586,11 +2687,12 @@ func docStr(docs []*ast.CommentGroup) string {
 // TODO: unwrap marshal error
 // TODO: improve error messages
 func TestMarshalJSON(t *testing.T) {
-	testCases := []struct {
+	type testCase struct {
 		value string
 		json  string
 		err   string
-	}{{
+	}
+	testCases := []testCase{{
 		value: `""`,
 		json:  `""`,
 	}, {
@@ -2654,6 +2756,9 @@ func TestMarshalJSON(t *testing.T) {
 	}, {
 		value: `{foo?: 1, bar?: 2, baz: 3}`,
 		json:  `{"baz":3}`,
+	}, {
+		value: `{foo!: 1, bar: 2}`,
+		err:   "cue: marshal error: foo: field is required but not present",
 	}, {
 		// Has an unresolved cycle, but should not matter as all fields involved
 		// are optional

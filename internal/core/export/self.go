@@ -175,13 +175,13 @@ func (p *pivotter) markDeps(v *adt.Vertex) {
 			// TODO: support marking non-CUE packages as "special". This could
 			// be done, for instance, by marking them as "core" in the runtime
 			// and using a Runtime method to determine whether something is
-			// a core package, rather than relying on the precense of a dot.
+			// a core package, rather than relying on the presence of a dot.
 			path := d.Import().ImportPath.StringValue(p.x.ctx)
 			if !strings.ContainsRune(path, '.') {
 				return nil
 			}
 
-		case node.Status() == adt.Unprocessed:
+		case node.IsUnprocessed():
 			// This may happen for DynamicReferences.
 			return nil
 		}
