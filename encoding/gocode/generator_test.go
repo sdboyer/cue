@@ -22,7 +22,7 @@ import (
 	"regexp"
 	"testing"
 
-	"github.com/kylelemons/godebug/diff"
+	"github.com/google/go-cmp/cmp"
 
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/errors"
@@ -66,16 +66,16 @@ func TestGenerate(t *testing.T) {
 
 			goFile := filepath.Join("testdata", d.Name(), "cue_gen.go")
 			if cuetest.UpdateGoldenFiles {
-				_ = ioutil.WriteFile(goFile, b, 0644)
+				_ = os.WriteFile(goFile, b, 0644)
 				return
 			}
 
-			want, err := ioutil.ReadFile(goFile)
+			want, err := os.ReadFile(goFile)
 			if err != nil {
 				t.Fatal(err)
 			}
 
-			if d := diff.Diff(string(want), string(b)); d != "" {
+			if d := cmp.Diff(string(want), string(b)); d != "" {
 				t.Errorf("files differ (-want +got):\n%v", d)
 			}
 		})

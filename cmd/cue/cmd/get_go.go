@@ -22,7 +22,6 @@ import (
 	"go/types"
 	"io"
 	"io/fs"
-	"io/ioutil"
 	"os"
 	"path"
 	"path/filepath"
@@ -211,7 +210,7 @@ restrictive enum interpretation of #Switch remains.
 	}
 
 	cmd.Flags().StringP(string(flagExclude), "e", "",
-		"comma-separated list of regexps of entries")
+		"comma-separated list of regexps of identifiers to omit")
 
 	cmd.Flags().Bool(string(flagLocal), false,
 		"generates files in the main module locally")
@@ -535,7 +534,7 @@ func (e *extractor) extractPkg(root string, p *packages.Package) error {
 		if err != nil {
 			return err
 		}
-		err = ioutil.WriteFile(filepath.Join(dir, file), b, 0666)
+		err = os.WriteFile(filepath.Join(dir, file), b, 0666)
 		if err != nil {
 			return err
 		}
@@ -589,14 +588,14 @@ func (e *extractor) importCUEFiles(p *packages.Package, dir, args string) error 
 				fmt.Fprintln(w, "//cue:generate cue get go", args)
 				fmt.Fprintln(w)
 
-				b, err := ioutil.ReadFile(path)
+				b, err := os.ReadFile(path)
 				if err != nil {
 					return err
 				}
 				w.Write(b)
 
 				dst := filepath.Join(dir, file)
-				if err := ioutil.WriteFile(dst, w.Bytes(), 0666); err != nil {
+				if err := os.WriteFile(dst, w.Bytes(), 0666); err != nil {
 					return err
 				}
 			}
@@ -696,7 +695,7 @@ func (e *extractor) reportDecl(x *ast.GenDecl) (a []cueast.Decl) {
 					break
 				}
 
-				f, _ := e.makeField(name, cuetoken.ISA, underlying, x.Doc, true)
+				f, _ := e.makeField(name, definition, underlying, x.Doc, true)
 				a = append(a, f)
 				cueast.SetRelPos(f, cuetoken.NewSection)
 
@@ -762,7 +761,7 @@ func (e *extractor) reportDecl(x *ast.GenDecl) (a []cueast.Decl) {
 			}
 
 			for i, name := range v.Names {
-				if name.Name == "_" {
+				if name.Name == "_" || e.filter(name.Name) {
 					continue
 				}
 				f := e.def(v.Doc, name.Name, nil, k == 0)
@@ -983,10 +982,18 @@ func supportedType(stack []types.Type, t types.Type) (ok bool) {
 	return false
 }
 
-func (e *extractor) makeField(name string, kind cuetoken.Token, expr types.Type, doc *ast.CommentGroup, newline bool) (f *cueast.Field, typename string) {
+type fieldKind int
+
+const (
+	regular fieldKind = iota
+	optional
+	definition
+)
+
+func (e *extractor) makeField(name string, kind fieldKind, expr types.Type, doc *ast.CommentGroup, newline bool) (f *cueast.Field, typename string) {
 	typ := e.makeType(expr)
 	var label cueast.Label
-	if kind == cuetoken.ISA {
+	if kind == definition {
 		label = e.ident(name, true)
 	} else {
 		label = e.strLabel(name)
@@ -997,10 +1004,20 @@ func (e *extractor) makeField(name string, kind cuetoken.Token, expr types.Type,
 		cueast.SetRelPos(doc, cuetoken.NewSection)
 	}
 
-	if kind == cuetoken.OPTION {
-		f.Token = cuetoken.COLON
-		f.Optional = cuetoken.Blank.Pos()
+	var tok cuetoken.Token
+	switch kind {
+	case definition:
+		// neither optional nor required.
+	case regular:
+		// TODO(required): use idiomatic CUE (token.NOT) if CUE version is
+		// higher than a certain number? We may not be able to determine this
+		// accurately enough.
+	case optional:
+		tok = cuetoken.OPTION
 	}
+
+	internal.SetConstraint(f, tok)
+
 	b, _ := format.Node(typ)
 	return f, string(b)
 }
@@ -1202,12 +1219,12 @@ func (e *extractor) addFields(x *types.Struct, st *cueast.StructLit) {
 			continue
 		}
 		// TODO: check referrers
-		kind := cuetoken.COLON
+		kind := regular
 		if e.isOptional(tag) {
-			kind = cuetoken.OPTION
+			kind = optional
 		}
 		if _, ok := f.Type().(*types.Pointer); ok {
-			kind = cuetoken.OPTION
+			kind = optional
 		}
 		field, cueType := e.makeField(name, kind, f.Type(), docs[i], count > 0)
 		add(field)

@@ -45,6 +45,12 @@ issue1308: {
 	let _xA = 1
 	sub: [{_A: _xA}]
 }
+
+// TODO: these could be merged into a single struct.
+issue2374: {
+	r=[string]: {z: 1, b: r | null}
+	a: {r: 0}
+}
 -- y.cue --
 fieldAlias: cross: {
 	baz: 3
@@ -59,19 +65,19 @@ fieldAlias: cross: {
 -- out/definition --
 fieldAlias: {
 	simple: {
-		X_1="a-b": 4
-		foo:       X_1
-		bar?:      Y_1
-		Y_1="a-c": 5
+		X="a-b": 4
+		foo:     X
+		bar?:    Y
+		Y="a-c": 5
 	}
 	cross: {
 		baz: 3
-		X_2="d-2": {
+		X="d-2": {
 			E=[D="cue"]: {
 				C="foo3": {
 					name: "xx"
 					foo:  C.name
-					bar:  X_2
+					bar:  X
 					baz:  D
 					qux:  E
 				}
@@ -83,8 +89,8 @@ valueAlias: {
 	merge: {
 		// Merge fields, rename alias to avoid conflict.
 		// TODO: merged values can still be simplified.
-		value: X_3={
-			#value: X_3.b & X_3.b
+		value: X_1={
+			#value: X_1.b & X_1.b
 			b:      2
 			v: {
 				X: 3
@@ -94,8 +100,8 @@ valueAlias: {
 	selfRef: {
 		struct: {
 			a: {
-				b: X_4={
-					#foo: X_4.b
+				b: X_2={
+					#foo: X_2.b
 					b:    2
 				}
 			}
@@ -109,7 +115,7 @@ valueAlias: {
 			// an issue exclusive to value aliases, and falls within the
 			// range of what is acceptable for now.
 			// TODO: solve this issue.
-			a: X_8=or(X_8)
+			a: X_3=or(X_3)
 		}
 		pattern: {
 			// this triggers the verbatim "adt" path. Note that there
@@ -127,12 +133,24 @@ issue1308: {
 		_A: _xA
 	}]
 }
+
+// TODO: these could be merged into a single struct.
+issue2374: {
+	r_1=[string]: {
+		z: 1
+		b: r_1 | null
+	}
+	a: {
+		r: 0
+	}
+}
 -- out/doc --
 []
 [fieldAlias]
 [fieldAlias simple]
 [fieldAlias simple "a-b"]
 [fieldAlias simple foo]
+[fieldAlias simple bar]
 [fieldAlias simple "a-c"]
 [fieldAlias cross]
 [fieldAlias cross baz]
@@ -174,6 +192,13 @@ was known to compile and is known to be correct.
 [issue1308 sub]
 [issue1308 sub 0]
 [issue1308 sub 0 _A]
+[issue2374]
+- TODO: these could be merged into a single struct.
+
+[issue2374 a]
+[issue2374 a r]
+[issue2374 a z]
+[issue2374 a b]
 -- out/value --
 == Simplified
 {
@@ -229,15 +254,24 @@ was known to compile and is known to be correct.
 	issue1308: {
 		sub: [{}]
 	}
+
+	// TODO: these could be merged into a single struct.
+	issue2374: {
+		a: {
+			r: 0
+			z: 1
+			b: null
+		}
+	}
 }
 == Raw
 {
 	fieldAlias: {
 		simple: {
-			"a-b":     4
-			foo:       4
-			bar?:      Y_1
-			Y_1="a-c": 5
+			"a-b": 4
+			foo:   4
+			bar?:  5
+			"a-c": 5
 		}
 		cross: {
 			baz: 3
@@ -288,6 +322,15 @@ was known to compile and is known to be correct.
 		sub: [{
 			_A: 1
 		}]
+	}
+
+	// TODO: these could be merged into a single struct.
+	issue2374: {
+		a: {
+			r: 0
+			z: 1
+			b: null
+		}
 	}
 }
 == Final
@@ -333,15 +376,22 @@ was known to compile and is known to be correct.
 	issue1308: {
 		sub: [{}]
 	}
+	issue2374: {
+		a: {
+			r: 0
+			z: 1
+			b: null
+		}
+	}
 }
 == All
 {
 	fieldAlias: {
 		simple: {
-			"a-b":     4
-			foo:       4
-			bar?:      Y_1
-			Y_1="a-c": 5
+			"a-b": 4
+			foo:   4
+			bar?:  5
+			"a-c": 5
 		}
 		cross: {
 			baz: 3
@@ -393,15 +443,24 @@ was known to compile and is known to be correct.
 			_A: 1
 		}]
 	}
+
+	// TODO: these could be merged into a single struct.
+	issue2374: {
+		a: {
+			r: 0
+			z: 1
+			b: null
+		}
+	}
 }
 == Eval
 {
 	fieldAlias: {
 		simple: {
-			"a-b":     4
-			foo:       4
-			bar?:      Y_1
-			Y_1="a-c": 5
+			"a-b": 4
+			foo:   4
+			bar?:  5
+			"a-c": 5
 		}
 		cross: {
 			baz: 3
@@ -439,5 +498,12 @@ was known to compile and is known to be correct.
 	}
 	issue1308: {
 		sub: [{}]
+	}
+	issue2374: {
+		a: {
+			r: 0
+			z: 1
+			b: null
+		}
 	}
 }

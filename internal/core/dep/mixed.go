@@ -27,7 +27,7 @@ import (
 // evaluated Vertex. A more correct and more performant algorithm would be to
 // descend into the conjuncts and evaluate the necessary values, like fields
 // and comprehension sources.
-func dynamic(c *adt.OpContext, n *adt.Vertex, f VisitFunc, m marked, top bool) {
+func dynamic(c *adt.OpContext, pkg *adt.ImportReference, n *adt.Vertex, f VisitFunc, m marked, top bool) {
 	found := false
 	for _, c := range n.Conjuncts {
 		if m[c.Expr()] {
@@ -40,7 +40,7 @@ func dynamic(c *adt.OpContext, n *adt.Vertex, f VisitFunc, m marked, top bool) {
 		return
 	}
 
-	if visit(c, n, f, false, top) != nil {
+	if visit(c, pkg, n, f, false, top) != nil {
 		return
 	}
 
@@ -48,7 +48,7 @@ func dynamic(c *adt.OpContext, n *adt.Vertex, f VisitFunc, m marked, top bool) {
 		if !a.IsDefined(c) || a.Label.IsLet() {
 			continue
 		}
-		dynamic(c, a, f, m, false)
+		dynamic(c, pkg, a, f, m, false)
 	}
 }
 
@@ -80,9 +80,6 @@ func (m marked) markExpr(x adt.Expr) {
 		for _, e := range x.Decls {
 			switch x := e.(type) {
 			case *adt.Field:
-				m.markExpr(x.Value)
-
-			case *adt.OptionalField:
 				m.markExpr(x.Value)
 
 			case *adt.BulkOptionalField:

@@ -30,7 +30,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kylelemons/godebug/diff"
+	"github.com/google/go-cmp/cmp"
 
 	"cuelang.org/go/cmd/cue/cmd"
 	"cuelang.org/go/cue/load"
@@ -40,10 +40,12 @@ import (
 
 var (
 	cleanup = flag.Bool("cleanup", true, "clean up generated files")
+
+	testLong = os.Getenv("CUE_LONG") != ""
 )
 
 func TestTutorial(t *testing.T) {
-	if !cuetest.Long {
+	if !testLong {
 		t.Skipf("the kubernetes tutorial can easily take half a minute")
 	}
 
@@ -53,7 +55,7 @@ func TestTutorial(t *testing.T) {
 	}
 
 	// Read the tutorial.
-	b, err := ioutil.ReadFile("README.md")
+	b, err := os.ReadFile("README.md")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -175,12 +177,12 @@ func TestTutorial(t *testing.T) {
 				repl := c.Bytes()
 				c.Next(" ", ".cue")
 				file := c.Text() + ".cue"
-				b, err := ioutil.ReadFile(file)
+				b, err := os.ReadFile(file)
 				if err != nil {
 					t.Fatal(err)
 				}
 				b = re.ReplaceAll(b, repl)
-				err = ioutil.WriteFile(file, b, 0644)
+				err = os.WriteFile(file, b, 0644)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -188,7 +190,7 @@ func TestTutorial(t *testing.T) {
 			case strings.HasPrefix(cmd, "touch "):
 				logf(t, "$ %s", cmd)
 				file := strings.TrimSpace(cmd[len("touch "):])
-				err := ioutil.WriteFile(file, []byte(""), 0644)
+				err := os.WriteFile(file, []byte(""), 0644)
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -247,17 +249,17 @@ func TestTutorial(t *testing.T) {
 		if filepath.Ext(path) != ".cue" {
 			return nil
 		}
-		b1, err := ioutil.ReadFile(path)
+		b1, err := os.ReadFile(path)
 		if err != nil {
 			t.Fatal(err)
 		}
-		b2, err := ioutil.ReadFile(path[len(dir)+1:])
+		b2, err := os.ReadFile(path[len(dir)+1:])
 		if err != nil {
 			t.Fatal(err)
 		}
 		got, want := string(b1), string(b2)
 		if got != want {
-			t.Log(diff.Diff(got, want))
+			t.Log(cmp.Diff(got, want))
 			return fmt.Errorf("file %q differs", path)
 		}
 		return nil
@@ -272,7 +274,7 @@ func isCUE(filename string) bool {
 }
 
 func TestEval(t *testing.T) {
-	if !cuetest.Long {
+	if !testLong {
 		t.Skipf("the kubernetes tutorial can easily take half a minute")
 	}
 
@@ -295,14 +297,14 @@ func TestEval(t *testing.T) {
 			testfile := filepath.Join("testdata", dir+".out")
 
 			if cuetest.UpdateGoldenFiles {
-				err := ioutil.WriteFile(testfile, got, 0644)
+				err := os.WriteFile(testfile, got, 0644)
 				if err != nil {
 					t.Fatal(err)
 				}
 				return
 			}
 
-			b, err := ioutil.ReadFile(testfile)
+			b, err := os.ReadFile(testfile)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -371,10 +373,7 @@ func run(t *testing.T, dir, command string, cfg *config) {
 		}
 		cfg.Stdout = buf
 	}
-	cmd, err := cmd.New(args)
-	if err != nil {
-		t.Fatal(err)
-	}
+	cmd, _ := cmd.New(args)
 	if cfg.Stdout != nil {
 		cmd.SetOutput(cfg.Stdout)
 	} else {
@@ -383,7 +382,7 @@ func run(t *testing.T, dir, command string, cfg *config) {
 	if cfg.Stdin != nil {
 		cmd.SetInput(cfg.Stdin)
 	}
-	if err = cmd.Run(context.Background()); err != nil {
+	if err := cmd.Run(context.Background()); err != nil {
 		if cfg.Stdout == nil {
 			logf(t, "Output:\n%s", buf.String())
 		}
@@ -404,7 +403,7 @@ func run(t *testing.T, dir, command string, cfg *config) {
 
 	want := strings.TrimSpace(cfg.Golden)
 	if got != want {
-		t.Errorf("files differ:\n%s", diff.Diff(got, want))
+		t.Errorf("files differ:\n%s", cmp.Diff(got, want))
 	}
 }
 

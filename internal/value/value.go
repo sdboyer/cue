@@ -32,9 +32,11 @@ func ConvertToRuntime(c *cue.Context) *cue.Runtime {
 	return (*cue.Runtime)(c)
 }
 
-func ConvertToContext(r *cue.Runtime) *cue.Context {
-	(*runtime.Runtime)(r).Init()
-	return (*cue.Context)(r)
+func ConvertToContext[Ctx *cue.Runtime | *cue.Context](ctx Ctx) *cue.Context {
+	if ctx, ok := any(ctx).(*cue.Runtime); ok {
+		(*runtime.Runtime)(ctx).Init()
+	}
+	return (*cue.Context)(ctx)
 }
 
 func ToInternal(v cue.Value) (*runtime.Runtime, *adt.Vertex) {
@@ -51,7 +53,7 @@ func Make(ctx *adt.OpContext, v adt.Value) cue.Value {
 func MakeError(r *runtime.Runtime, err errors.Error) cue.Value {
 	b := &adt.Bottom{Err: err}
 	node := &adt.Vertex{BaseValue: b}
-	node.UpdateStatus(adt.Finalized)
+	node.ForceDone()
 	node.AddConjunct(adt.MakeRootConjunct(nil, b))
 	return (*cue.Context)(r).Encode(node)
 }

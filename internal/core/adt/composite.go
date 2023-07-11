@@ -101,9 +101,10 @@ type cacheKey struct {
 	Arc  *Vertex
 }
 
-func (e *Environment) up(count int32) *Environment {
+func (e *Environment) up(ctx *OpContext, count int32) *Environment {
 	for ; count > 0; count-- {
 		e = e.Up
+		ctx.Assertf(ctx.Pos(), e.Vertex != nil, "Environment.up encountered a nil vertex")
 	}
 	return e
 }
@@ -126,7 +127,7 @@ func (e *Environment) evalCached(c *OpContext, x Expr) Value {
 		// Save and restore errors to ensure that only relevant errors are
 		// associated with the cash.
 		err := c.errs
-		v = c.evalState(x, Partial) // TODO: should this be Finalized?
+		v = c.evalState(x, partial) // TODO: should this be finalized?
 		c.e, c.src = env, src
 		c.errs = err
 		if b, ok := v.(*Bottom); !ok || !b.IsIncomplete() {
@@ -161,10 +162,17 @@ type Vertex struct {
 	// Label is the feature leading to this vertex.
 	Label Feature
 
-	// status indicates the evaluation progress of this vertex.
-	status VertexStatus
+	// TODO: move the following status fields to nodeContext.
 
-	// isData indicates that this Vertex is to be interepreted as data: pattern
+	// status indicates the evaluation progress of this vertex.
+	status vertexStatus
+
+	// hasAllConjuncts indicates that the set of conjuncts is complete.
+	// This is the case if the conjuncts of all its ancestors have been
+	// processed.
+	hasAllConjuncts bool
+
+	// isData indicates that this Vertex is to be interpreted as data: pattern
 	// and additional constraints, as well as optional fields, should be
 	// ignored.
 	isData bool
@@ -189,8 +197,11 @@ type Vertex struct {
 	// Used for cycle detection.
 	IsDynamic bool
 
-	// arcType indicates the level of optionality of this arc.
-	arcType arcType
+	// hasPendingArc is set if this Vertex has a void arc (e.g. for comprehensions)
+	hasPendingArc bool
+
+	// ArcType indicates the level of optionality of this arc.
+	ArcType ArcType
 
 	// cyclicReferences is a linked list of internal references pointing to this
 	// Vertex. This is used to shorten the path of some structural cycles.
@@ -220,10 +231,34 @@ type Vertex struct {
 	Structs []*StructInfo
 }
 
+// newInlineVertex creates a Vertex that is needed for computation, but for
+// which there is no CUE path defined from the root Vertex.
+func (ctx *OpContext) newInlineVertex(parent *Vertex, v BaseValue, a ...Conjunct) *Vertex {
+	return &Vertex{
+		Parent:    parent,
+		BaseValue: v,
+		IsDynamic: true,
+		ArcType:   ArcMember,
+		Conjuncts: a,
+	}
+}
+
+// updateArcType updates v.ArcType if t is more restrictive.
+func (v *Vertex) updateArcType(t ArcType) {
+	if t < v.ArcType {
+		v.ArcType = t
+	}
+}
+
 // isDefined indicates whether this arc is a "value" field, and not a constraint
 // or void arc.
 func (v *Vertex) isDefined() bool {
-	return v.arcType == arcMember
+	return v.ArcType == ArcMember
+}
+
+// IsConstraint reports whether the Vertex is an optional or required field.
+func (v *Vertex) IsConstraint() bool {
+	return v.ArcType == ArcOptional || v.ArcType == ArcRequired
 }
 
 // IsDefined indicates whether this arc is defined meaning it is not a
@@ -234,27 +269,89 @@ func (v *Vertex) IsDefined(c *OpContext) bool {
 	if v.isDefined() {
 		return true
 	}
-	c.Unify(v, Finalized)
+	v.Finalize(c)
 	return v.isDefined()
 }
 
-type arcType uint8
+type ArcType uint8
 
 const (
-	// arcMember means that this arc is a normal non-optional field
+	// ArcMember means that this arc is a normal non-optional field
 	// (including regular, hidden, and definition fields).
-	arcMember arcType = iota
+	ArcMember ArcType = iota
+
+	// ArcRequired is like optional, but requires that a field be specified.
+	// Fields are of the form foo!.
+	ArcRequired
+
+	// ArcOptional represents fields of the form foo? and defines constraints
+	// for foo in case it is defined.
+	ArcOptional
+
+	// ArcPending means that it is not known yet whether an arc exists and that
+	// its conjuncts need to be processed to find out. This happens when an arc
+	// is provisionally added as part of a comprehension, but when this
+	// comprehension has not yet yielded any results.
+	ArcPending
+
+	// ArcNotPresent indicates that this arc is not present and, unlike
+	// ArcPending, needs no further processing.
+	ArcNotPresent
 
 	// TODO: define a type for optional arcs. This will be needed for pulling
 	// in optional fields into the Vertex, which, in turn, is needed for
 	// structure sharing, among other things.
 	// We could also define types for required fields and potentially lets.
-
-	// arcVoid means that an arc does not exist. This happens when an arc
-	// is provisionally added as part of a comprehension, but when this
-	// comprehension has not yet yielded any results.
-	arcVoid
 )
+
+// definitelyExists reports whether an arc is a constraint or member arc.
+// TODO: we should check that users of this call ensure there are no
+// ArcPendings.
+func (v *Vertex) definitelyExists() bool {
+	return v.ArcType < ArcPending
+}
+
+// ConstraintFromToken converts a given AST constraint token to the
+// corresponding ArcType.
+func ConstraintFromToken(t token.Token) ArcType {
+	switch t {
+	case token.OPTION:
+		return ArcOptional
+	case token.NOT:
+		return ArcRequired
+	}
+	return ArcMember
+}
+
+// Token reports the token corresponding to the constraint represented by a,
+// or token.ILLEGAL otherwise.
+func (a ArcType) Token() (t token.Token) {
+	switch a {
+	case ArcOptional:
+		t = token.OPTION
+	case ArcRequired:
+		t = token.NOT
+	}
+	return t
+}
+
+// Suffix reports the field suffix for the given ArcType if it is a
+// constraint or the empty string otherwise.
+func (a ArcType) Suffix() string {
+	switch a {
+	case ArcOptional:
+		return "?"
+	case ArcRequired:
+		return "!"
+
+	// For debugging internal state. This is not CUE syntax.
+	case ArcPending:
+		return "*"
+	case ArcNotPresent:
+		return "-"
+	}
+	return ""
+}
 
 func (v *Vertex) Clone() *Vertex {
 	c := *v
@@ -287,69 +384,101 @@ func (s *StructInfo) useForAccept() bool {
 	return true
 }
 
-// VertexStatus indicates the evaluation progress of a Vertex.
-type VertexStatus int8
+// vertexStatus indicates the evaluation progress of a Vertex.
+type vertexStatus int8
 
 const (
-	// Unprocessed indicates a Vertex has not been processed before.
+	// unprocessed indicates a Vertex has not been processed before.
 	// Value must be nil.
-	Unprocessed VertexStatus = iota
+	unprocessed vertexStatus = iota
 
-	// Evaluating means that the current Vertex is being evaluated. If this is
+	// evaluating means that the current Vertex is being evaluated. If this is
 	// encountered it indicates a reference cycle. Value must be nil.
-	Evaluating
+	evaluating
 
-	// Partial indicates that the result was only partially evaluated. It will
+	// partial indicates that the result was only partially evaluated. It will
 	// need to be fully evaluated to get a complete results.
 	//
 	// TODO: this currently requires a renewed computation. Cache the
 	// nodeContext to allow reusing the computations done so far.
-	Partial
+	partial
 
-	// Conjuncts is the state reached when all conjuncts have been evaluated,
+	// conjuncts is the state reached when all conjuncts have been evaluated,
 	// but without recursively processing arcs.
-	Conjuncts
+	conjuncts
 
-	// EvaluatingArcs indicates that the arcs of the Vertex are currently being
+	// evaluatingArcs indicates that the arcs of the Vertex are currently being
 	// evaluated. If this is encountered it indicates a structural cycle.
 	// Value does not have to be nil
-	EvaluatingArcs
+	evaluatingArcs
 
-	// Finalized means that this node is fully evaluated and that the results
+	// finalized means that this node is fully evaluated and that the results
 	// are save to use without further consideration.
-	Finalized
+	finalized
 )
 
-func (s VertexStatus) String() string {
+func (s vertexStatus) String() string {
 	switch s {
-	case Unprocessed:
+	case unprocessed:
 		return "unprocessed"
-	case Evaluating:
+	case evaluating:
 		return "evaluating"
-	case Partial:
+	case partial:
 		return "partial"
-	case Conjuncts:
+	case conjuncts:
 		return "conjuncts"
-	case EvaluatingArcs:
+	case evaluatingArcs:
 		return "evaluatingArcs"
-	case Finalized:
+	case finalized:
 		return "finalized"
 	default:
 		return "unknown"
 	}
 }
 
-func (v *Vertex) Status() VertexStatus {
+func (v *Vertex) Status() vertexStatus {
 	return v.status
 }
 
-func (v *Vertex) UpdateStatus(s VertexStatus) {
+// ForceDone prevents v from being evaluated.
+func (v *Vertex) ForceDone() {
+	v.updateStatus(finalized)
+}
+
+// IsUnprocessed reports whether v is unprocessed.
+func (v *Vertex) IsUnprocessed() bool {
+	return v.status == unprocessed
+}
+
+func (v *Vertex) updateStatus(s vertexStatus) {
 	Assertf(v.status <= s+1, "attempt to regress status from %d to %d", v.Status(), s)
 
-	if s == Finalized && v.BaseValue == nil {
+	if s == finalized && v.BaseValue == nil {
+		// TODO: for debugging.
 		// panic("not finalized")
 	}
 	v.status = s
+}
+
+// setParentDone signals v that the conjuncts of all ancestors have been
+// processed.
+// If all conjuncts of this node have been set, all arcs will be notified
+// of this parent being done.
+//
+// Note: once a vertex has started evaluation (state != nil), insertField will
+// cause all conjuncts to be immediately processed. This means that if all
+// ancestors of this node processed their conjuncts, and if this node has
+// processed all its conjuncts as well, all nodes that it embedded will have
+// received all their conjuncts as well, after which this node will have been
+// notified of these conjuncts.
+func (v *Vertex) setParentDone() {
+	v.hasAllConjuncts = true
+	// Could set "Conjuncts" flag of arc at this point.
+	if n := v.state; n != nil && len(n.conjuncts) == 0 {
+		for _, a := range v.Arcs {
+			a.setParentDone()
+		}
+	}
 }
 
 // Value returns the Value of v without definitions if it is a scalar
@@ -398,7 +527,7 @@ func (v *Vertex) ToDataSingle() *Vertex {
 	w := *v
 	w.isData = true
 	w.state = nil
-	w.status = Finalized
+	w.status = finalized
 	return &w
 }
 
@@ -416,7 +545,7 @@ func (v *Vertex) ToDataAll(ctx *OpContext) *Vertex {
 	}
 	w := *v
 	w.state = nil
-	w.status = Finalized
+	w.status = finalized
 
 	w.BaseValue = toDataAll(ctx, w.BaseValue)
 	w.Arcs = arcs
@@ -448,9 +577,14 @@ func toDataAll(ctx *OpContext, v BaseValue) BaseValue {
 	// to avoid issues with the closedness algorithm down the line.
 	case *Disjunction:
 		d := *x
-		d.Values = make([]*Vertex, len(x.Values))
+		d.Values = make([]Value, len(x.Values))
 		for i, v := range x.Values {
-			d.Values[i] = v.ToDataAll(ctx)
+			switch x := v.(type) {
+			case *Vertex:
+				d.Values[i] = x.ToDataAll(ctx)
+			default:
+				d.Values[i] = x
+			}
 		}
 		return &d
 
@@ -478,8 +612,8 @@ func (v *Vertex) IsErr() bool {
 	return false
 }
 
-func (v *Vertex) Err(c *OpContext, state VertexStatus) *Bottom {
-	c.Unify(v, state)
+func (v *Vertex) Err(c *OpContext) *Bottom {
+	v.Finalize(c)
 	if b, ok := v.BaseValue.(*Bottom); ok {
 		return b
 	}
@@ -493,17 +627,27 @@ func (v *Vertex) Finalize(c *OpContext) {
 	// case the caller did not handle existing errors in the context.
 	err := c.errs
 	c.errs = nil
-	c.Unify(v, Finalized)
+	c.unify(v, finalized)
 	c.errs = err
 }
 
-func (v *Vertex) AddErr(ctx *OpContext, b *Bottom) {
-	v.SetValue(ctx, Finalized, CombineErrors(nil, v.Value(), b))
+// CompleteArcs ensures the set of arcs has been computed.
+func (v *Vertex) CompleteArcs(c *OpContext) {
+	c.unify(v, conjuncts)
 }
 
-func (v *Vertex) SetValue(ctx *OpContext, state VertexStatus, value BaseValue) *Bottom {
+func (v *Vertex) AddErr(ctx *OpContext, b *Bottom) {
+	v.SetValue(ctx, CombineErrors(nil, v.Value(), b))
+}
+
+// SetValue sets the value of a node.
+func (v *Vertex) SetValue(ctx *OpContext, value BaseValue) *Bottom {
+	return v.setValue(ctx, finalized, value)
+}
+
+func (v *Vertex) setValue(ctx *OpContext, state vertexStatus, value BaseValue) *Bottom {
 	v.BaseValue = value
-	v.UpdateStatus(state)
+	v.updateStatus(state)
 	return nil
 }
 
@@ -514,7 +658,7 @@ func ToVertex(v Value) *Vertex {
 		return x
 	default:
 		n := &Vertex{
-			status:    Finalized,
+			status:    finalized,
 			BaseValue: x,
 		}
 		n.AddConjunct(MakeRootConjunct(nil, v))
@@ -572,7 +716,7 @@ func (v *Vertex) Kind() Kind {
 	// not known at this time what the type is.
 	switch {
 	// TODO: using this line would be more stable.
-	// case v.status != Finalized && v.state != nil:
+	// case v.status != finalized && v.state != nil:
 	case v.state != nil:
 		return v.state.kind
 	case v.BaseValue == nil:
@@ -593,9 +737,9 @@ func (v *Vertex) OptionalTypes() OptionalType {
 // IsOptional reports whether a field is explicitly defined as optional,
 // as opposed to whether it is allowed by a pattern constraint.
 func (v *Vertex) IsOptional(label Feature) bool {
-	for _, s := range v.Structs {
-		if s.IsOptionalField(label) {
-			return true
+	for _, a := range v.Arcs {
+		if a.Label == label {
+			return a.IsConstraint()
 		}
 	}
 	return false
@@ -629,9 +773,13 @@ func (v *Vertex) IsClosedList() bool {
 
 // TODO: return error instead of boolean? (or at least have version that does.)
 func (v *Vertex) Accept(ctx *OpContext, f Feature) bool {
+	if f.IsHidden() || f.IsLet() {
+		return true
+	}
+
 	if x, ok := v.BaseValue.(*Disjunction); ok {
 		for _, v := range x.Values {
-			if v.Accept(ctx, f) {
+			if x, ok := v.(*Vertex); ok && x.Accept(ctx, f) {
 				return true
 			}
 		}
@@ -660,7 +808,7 @@ func (v *Vertex) Accept(ctx *OpContext, f Feature) bool {
 		}
 	}
 
-	if f.IsHidden() || !v.IsClosedStruct() || v.Lookup(f) != nil {
+	if !v.IsClosedStruct() || v.Lookup(f) != nil {
 		return true
 	}
 
@@ -718,9 +866,10 @@ func (v *Vertex) Elems() []*Vertex {
 
 // GetArc returns a Vertex for the outgoing arc with label f. It creates and
 // ads one if it doesn't yet exist.
-func (v *Vertex) GetArc(c *OpContext, f Feature, t arcType) (arc *Vertex, isNew bool) {
+func (v *Vertex) GetArc(c *OpContext, f Feature, t ArcType) (arc *Vertex, isNew bool) {
 	arc = v.Lookup(f)
 	if arc != nil {
+		arc.updateArcType(t)
 		return arc, false
 	}
 
@@ -728,14 +877,17 @@ func (v *Vertex) GetArc(c *OpContext, f Feature, t arcType) (arc *Vertex, isNew 
 		// TODO(errors): add positions.
 		if f.IsInt() {
 			c.addErrf(EvalError, token.NoPos,
-				"element at index %s not allowed by earlier comprehension or reference cycle", f)
+				"element at index %v not allowed by earlier comprehension or reference cycle", f)
 		} else {
 			c.addErrf(EvalError, token.NoPos,
-				"field %s not allowed by earlier comprehension or reference cycle", f)
+				"field %v not allowed by earlier comprehension or reference cycle", f)
 		}
 	}
-	arc = &Vertex{Parent: v, Label: f, arcType: t}
+	arc = &Vertex{Parent: v, Label: f, ArcType: t}
 	v.Arcs = append(v.Arcs, arc)
+	if t == ArcPending {
+		v.hasPendingArc = true
+	}
 	return arc, true
 }
 
@@ -764,10 +916,14 @@ func (v *Vertex) AddConjunct(c Conjunct) *Bottom {
 }
 
 func (v *Vertex) hasConjunct(c Conjunct) (added bool) {
-	switch c.x.(type) {
-	case *OptionalField, *BulkOptionalField, *Ellipsis:
+	switch f := c.x.(type) {
+	case *BulkOptionalField, *Ellipsis:
+	case *Field:
+		v.updateArcType(f.ArcType)
+	case *DynamicField:
+		v.updateArcType(f.ArcType)
 	default:
-		v.arcType = arcMember
+		v.ArcType = ArcMember
 	}
 	for _, x := range v.Conjuncts {
 		// TODO: disregard certain fields from comparison (e.g. Refs)?
@@ -784,6 +940,36 @@ func (v *Vertex) addConjunctUnchecked(c Conjunct) {
 	v.Conjuncts = append(v.Conjuncts, c)
 	if n := v.state; n != nil {
 		n.conjuncts = append(n.conjuncts, c)
+		// TODO: can we remove notifyConjunct here? This method is only
+		// used if either Unprocessed is 0, in which case there will be no
+		// notification recipients, or for "pushed down" comprehensions,
+		// which should also have been added at an earlier point.
+		n.notifyConjunct(c)
+	}
+}
+
+// addConjunctDynamic adds a conjunct to a vertex and immediately evaluates
+// it, whilst doing the same for any vertices on the notify list, recursively.
+func (n *nodeContext) addConjunctDynamic(c Conjunct) {
+	n.node.Conjuncts = append(n.node.Conjuncts, c)
+	n.addExprConjunct(c, partial)
+	n.notifyConjunct(c)
+
+}
+
+func (n *nodeContext) notifyConjunct(c Conjunct) {
+	for _, arc := range n.notify {
+		if !arc.hasConjunct(c) {
+			if arc.state == nil {
+				// TODO: continuing here is likely to result in a faulty
+				// (incomplete) configuration. But this may be okay. The
+				// CUE_DEBUG=0 flag disables this assertion.
+				n.ctx.Assertf(n.ctx.pos(), Debug, "unexpected nil state")
+				n.ctx.addErrf(0, n.ctx.pos(), "cannot add to field %v", arc.Label)
+				continue
+			}
+			arc.state.addConjunctDynamic(c)
+		}
 	}
 }
 

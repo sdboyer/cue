@@ -27,7 +27,6 @@ import (
 
 	"cuelang.org/go/cue/errors"
 	"cuelang.org/go/cue/literal"
-	"cuelang.org/go/internal"
 	"cuelang.org/go/internal/core/adt"
 )
 
@@ -221,19 +220,26 @@ func (w *printer) node(n adt.Node) {
 		}
 
 		for _, a := range x.Arcs {
-			w.string("\n")
+			if a.ArcType == adt.ArcNotPresent {
+				continue
+			}
 			if a.Label.IsLet() {
+				w.string("\n")
 				w.string("let ")
 				w.label(a.Label)
+				if a.MultiLet {
+					w.string("multi")
+				}
 				w.string(" = ")
 				if c := a.Conjuncts[0]; a.MultiLet {
 					w.node(c.Expr())
-					w.string(" // multi")
 					continue
 				}
 				w.node(a)
 			} else {
+				w.string("\n")
 				w.label(a.Label)
+				w.string(a.ArcType.Suffix())
 				w.string(": ")
 				w.node(a)
 			}
@@ -292,20 +298,8 @@ func (w *printer) node(n adt.Node) {
 	case *adt.Field:
 		s := w.labelString(x.Label)
 		w.string(s)
+		w.string(x.ArcType.Suffix())
 		w.string(":")
-		if x.Label.IsDef() && !internal.IsDef(s) {
-			w.string(":")
-		}
-		w.string(" ")
-		w.node(x.Value)
-
-	case *adt.OptionalField:
-		s := w.labelString(x.Label)
-		w.string(s)
-		w.string("?:")
-		if x.Label.IsDef() && !internal.IsDef(s) {
-			w.string(":")
-		}
 		w.string(" ")
 		w.node(x.Value)
 
@@ -313,6 +307,9 @@ func (w *printer) node(n adt.Node) {
 		w.string("let ")
 		s := w.labelString(x.Label)
 		w.string(s)
+		if x.IsMulti {
+			w.string("multi")
+		}
 		w.string(" = ")
 		w.node(x.Value)
 
@@ -324,9 +321,7 @@ func (w *printer) node(n adt.Node) {
 
 	case *adt.DynamicField:
 		w.node(x.Key)
-		if x.IsOptional() {
-			w.string("?")
-		}
+		w.string(x.ArcType.Suffix())
 		w.string(": ")
 		w.node(x.Value)
 

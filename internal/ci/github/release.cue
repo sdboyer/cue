@@ -15,16 +15,18 @@
 package github
 
 import (
+	"list"
+
 	"github.com/SchemaStore/schemastore/src/schemas/json"
 )
 
-// _#cueVersionRef is a workflow job-runtime expression that evaluates to the
+// _cueVersionRef is a workflow job-runtime expression that evaluates to the
 // git tag (version) that is being released. Defining as a "constant" here for
 // re-use below
-_#cueVersionRef: "${GITHUB_REF##refs/tags/}"
+_cueVersionRef: "${GITHUB_REF##refs/tags/}"
 
 // The release workflow
-release: _base.#bashWorkflow & {
+workflows: release: _repo.bashWorkflow & {
 
 	name: "Release"
 
@@ -33,15 +35,17 @@ release: _base.#bashWorkflow & {
 	// homebrew tags.
 	concurrency: "release"
 
-	on: push: tags: [_#releaseTagPattern]
+	on: push: {
+		tags: [_repo.releaseTagPattern, "!" + _repo.zeroReleaseTagPattern]
+		branches: list.Concat([[_repo.testDefaultBranch], _repo.protectedBranchPatterns])
+	}
 	jobs: goreleaser: {
-		"runs-on": _#linuxMachine
+		"runs-on": _repo.linuxMachine
+		if:        "${{github.repository == '\(_repo.githubRepositoryPath)'}}"
 		steps: [
-			_base.#checkoutCode & {
-				with: "fetch-depth": 0
-			},
-			_base.#installGo & {
-				with: "go-version": _#pinnedReleaseGo
+			for v in _repo.checkoutCode {v},
+			_repo.installGo & {
+				with: "go-version": _repo.pinnedReleaseGo
 			},
 			json.#step & {
 				name: "Setup qemu"
@@ -61,36 +65,45 @@ release: _base.#bashWorkflow & {
 				}
 			},
 			json.#step & {
+				name: "Install CUE"
+				run:  "go install ./cmd/cue"
+			},
+			json.#step & {
 				name: "Install GoReleaser"
 				uses: "goreleaser/goreleaser-action@v3"
 				with: {
 					"install-only": true
-					version:        _#goreleaserVersion
+					version:        _repo.goreleaserVersion
 				}
 			},
 			json.#step & {
-				name: "Run GoReleaser"
+				// Note that the logic for what gets run at release time
+				// is defined with the release command in CUE.
+				name: "Run GoReleaser with CUE"
 				env: GITHUB_TOKEN: "${{ secrets.CUECKOO_GITHUB_PAT }}"
 				run:                 "cue cmd release"
 				"working-directory": "./internal/ci/goreleaser"
 			},
-			_base.#repositoryDispatch & {
-				name:           "Re-test cuelang.org"
-				#repositoryURL: "https://github.com/cue-lang/cuelang.org"
+			_repo.repositoryDispatch & {
+				name:                  "Re-test cuelang.org"
+				if:                    _repo.isReleaseTag
+				#githubRepositoryPath: _repo.cuelangRepositoryPath
 				#arg: {
-					event_type: "Re-test post release of \(_#cueVersionRef)"
+					event_type: "Re-test post release of \(_cueVersionRef)"
 				}
 			},
-			_base.#repositoryDispatch & {
-				name:           "Trigger unity build"
-				#repositoryURL: _#unityURL
+			_repo.repositoryDispatch & {
+				name:                          "Trigger unity build"
+				if:                            _repo.isReleaseTag
+				#githubRepositoryPath:         _repo.unityRepositoryPath
+				#botGitHubUserTokenSecretsKey: "PORCUEPINE_GITHUB_PAT"
 				#arg: {
-					event_type: "Check against CUE \(_#cueVersionRef)"
+					event_type: "Check against CUE \(_cueVersionRef)"
 					client_payload: {
 						type: "unity"
 						payload: {
 							versions: """
-							"\(_#cueVersionRef)"
+							"\(_cueVersionRef)"
 							"""
 						}
 					}

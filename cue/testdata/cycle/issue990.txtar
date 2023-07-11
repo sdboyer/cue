@@ -106,7 +106,7 @@ out: #sub & {#p: _test.s1}
       [string]: _
     }
     for rn, rd in 〈0;#p〉.d.r if (〈0;rd〉.a.k == "complex") {
-      let subs#1 = (〈3;#sub〉 & {
+      let subs#1multi = (〈3;#sub〉 & {
         #p: 〈2;rd〉.a
       })
       for sn, sd in 〈0;let subs#1〉.dict {
@@ -174,14 +174,14 @@ out: #sub & {#p: _test.s1}
 }
 -- out/eval/stats --
 Leaks:  0
-Freed:  2160
-Reused: 2134
+Freed:  1907
+Reused: 1881
 Allocs: 26
-Retain: 12
+Retain: 24
 
-Unifications: 1740
-Conjuncts:    8278
-Disjuncts:    2172
+Unifications: 1541
+Conjuncts:    6931
+Disjuncts:    1931
 -- out/eval --
 (struct){
   #AC: (#struct){

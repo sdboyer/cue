@@ -43,6 +43,10 @@ type Context runtime.Runtime
 
 func (c *Context) runtime() *runtime.Runtime {
 	rt := (*runtime.Runtime)(c)
+	if !rt.IsInitialized() {
+		panic("cue: uninitialized Context: use cuecontext.New instead of zero value")
+	}
+
 	return rt
 }
 
@@ -129,7 +133,7 @@ func (c *Context) BuildInstance(i *build.Instance, options ...BuildOption) Value
 func (c *Context) makeError(err errors.Error) Value {
 	b := &adt.Bottom{Err: err}
 	node := &adt.Vertex{BaseValue: b}
-	node.UpdateStatus(adt.Finalized)
+	node.ForceDone()
 	node.AddConjunct(adt.MakeRootConjunct(nil, b))
 	return c.make(node)
 }
@@ -245,7 +249,10 @@ func (c *Context) CompileBytes(b []byte, options ...BuildOption) Value {
 // }
 
 func (c *Context) make(v *adt.Vertex) Value {
-	return newValueRoot(c.runtime(), newContext(c.runtime()), v)
+	opCtx := newContext(c.runtime())
+	x := newValueRoot(c.runtime(), opCtx, v)
+	adt.AddStats(opCtx)
+	return x
 }
 
 // An EncodeOption defines options for the various encoding-related methods of

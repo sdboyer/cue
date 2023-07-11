@@ -53,10 +53,15 @@ var defaultConfig = config{
 					version = -1000 + 100
 				}
 			}
-			return parser.ParseFile(name, src,
+			options := []parser.Option{
 				parser.FromVersion(version),
 				parser.ParseComments,
-			)
+			}
+			// TODO: consolidate all options into a single CUE_DEBUG variable.
+			if os.Getenv("CUE_DEBUG_PARSER_TRACE") != "" {
+				options = append(options, parser.Trace)
+			}
+			return parser.ParseFile(name, src, options...)
 		},
 	},
 }
@@ -260,6 +265,9 @@ func (i *streamingIterator) scan() bool {
 	// advance to next value
 	if i.dec != nil && !i.dec.Done() {
 		i.dec.Next()
+		if i.e = i.dec.Err(); i.e != nil {
+			return false
+		}
 	}
 
 	// advance to next stream if necessary
@@ -288,11 +296,8 @@ func (i *streamingIterator) scan() bool {
 	}
 	i.v = v
 	if schema := i.b.encConfig.Schema; schema.Exists() {
-		i.e = schema.Err()
-		if i.e == nil {
-			i.v = i.v.Unify(schema) // TODO(required fields): don't merge in schema
-			i.e = i.v.Err()
-		}
+		i.v = i.v.Unify(schema) // TODO(required fields): don't merge in schema
+		i.e = i.v.Err()
 		if i.e != nil {
 			if err := i.v.Validate(); err != nil {
 				// Validate should always be non-nil, but just in case.
@@ -427,12 +432,6 @@ func (d *decoderInfo) dec(b *buildPlan) *encoding.Decoder {
 	return d.d
 }
 
-func (d *decoderInfo) close() {
-	if d.d != nil {
-		d.d.Close()
-	}
-}
-
 // getDecoders takes the orphaned files of the given instance and splits them in
 // schemas and values, saving the build.File and encoding.Decoder in the
 // returned slices. It is up to the caller to Close any of the decoders that are
@@ -512,9 +511,6 @@ func (p *buildPlan) importFiles(b *build.Instance) error {
 	// TODO: assume textproto is imported at top-level or just ignore them.
 
 	schemas, values, err := p.getDecoders(b)
-	for _, d := range append(schemas, values...) {
-		defer d.close()
-	}
 	if err != nil {
 		return err
 	}
@@ -567,9 +563,6 @@ func parseArgs(cmd *Command, args []string, cfg *config) (p *buildPlan, err erro
 
 	if b := p.orphanInstance; b != nil {
 		schemas, values, err := p.getDecoders(b)
-		for _, d := range append(schemas, values...) {
-			defer d.close()
-		}
 		if err != nil {
 			return nil, err
 		}
@@ -588,6 +581,7 @@ func parseArgs(cmd *Command, args []string, cfg *config) (p *buildPlan, err erro
 			if err := d.Err(); err != nil {
 				return nil, err
 			}
+			d.Close()
 		}
 
 		if len(p.insts) > 1 && p.schema != nil {
@@ -624,7 +618,7 @@ func parseArgs(cmd *Command, args []string, cfg *config) (p *buildPlan, err erro
 				[]*build.Instance{schema},
 				true)[0]
 
-			if inst.err != nil {
+			if err := inst.err; err != nil {
 				return nil, err
 			}
 			p.instance = inst
@@ -633,8 +627,10 @@ func parseArgs(cmd *Command, args []string, cfg *config) (p *buildPlan, err erro
 				v := cmd.ctx.BuildExpr(p.schema,
 					cue.InferBuiltins(true),
 					cue.Scope(inst.Value()))
-				if err := v.Err(); err != nil {
-					return nil, v.Validate()
+				// Note that we don't check v.Err as we don't care about
+				// incomplete errors.
+				if err := v.Validate(); err != nil {
+					return nil, err
 				}
 				p.encConfig.Schema = v
 			}
@@ -716,6 +712,7 @@ func (b *buildPlan) parseFlags() (err error) {
 		PkgName:       flagPackage.String(b.cmd),
 		Strict:        flagStrict.Bool(b.cmd),
 		InlineImports: flagInlineImports.Bool(b.cmd),
+		EscapeHTML:    flagEscape.Bool(b.cmd),
 	}
 	return nil
 }
@@ -768,7 +765,6 @@ func buildToolInstances(cmd *Command, binst []*build.Instance) ([]*cue.Instance,
 }
 
 func buildTools(cmd *Command, args []string) (*cue.Instance, error) {
-
 	cfg := &load.Config{
 		Tools: true,
 	}

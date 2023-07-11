@@ -16,7 +16,7 @@
 [![Go Reference](https://pkg.go.dev/badge/cuelang.org/go.svg)](https://pkg.go.dev/cuelang.org/go)
 [![Github](https://github.com/cue-lang/cue/actions/workflows/trybot.yml/badge.svg)](https://github.com/cue-lang/cue/actions/workflows/trybot.yml?query=branch%3Amaster+event%3Apush)
 [![GolangCI](https://golangci.com/badges/github.com/cue-lang/cue.svg)](https://golangci.com/r/github.com/cue-lang/cue)
-[![Go 1.18+](https://img.shields.io/badge/go-1.18-9cf.svg)](https://golang.org/dl/)
+[![Go 1.19+](https://img.shields.io/badge/go-1.19-9cf.svg)](https://golang.org/dl/)
 [![platforms](https://img.shields.io/badge/platforms-linux|windows|macos-inactive.svg)]()
 
 # The CUE Data Constraint Language
@@ -121,7 +121,7 @@ For more details, see [Installing CUE](./doc/install.md).
 The fastest way to learn the basics is to follow the
 [tutorial on basic language constructs](./doc/tutorial/basics/Readme.md).
 
-A more elaborate tutorial demonstrating of how to convert and restructure
+A more elaborate tutorial demonstrating how to convert and restructure
 an existing set of Kubernetes configurations is available in
 [written form](./doc/tutorial/kubernetes/README.md).
 

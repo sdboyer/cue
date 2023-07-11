@@ -105,6 +105,17 @@ type compiler struct {
 	stack      []frame
 	inSelector int
 
+	// refersToForVariable tracks whether an expression refers to a key or
+	// value produced by a for comprehension embedded within a struct.
+	// An Environment associated with such a comprehension value is collapsed
+	// onto the destination.
+	// Tracking this is necessary for let fields, which should not be unified
+	// into the destination when referring to such values.
+	// See https://cuelang.org/issue/2218.
+	// TODO(perf): use this to compute when a field can be structure shared
+	// across different iterations of the same field.
+	refersToForVariable bool
+
 	fileScope map[adt.Feature]bool
 
 	num literal.NumInfo
@@ -122,7 +133,7 @@ func (c *compiler) errf(n ast.Node, format string, args ...interface{}) *adt.Bot
 	err := &compilerError{
 		n:       n,
 		path:    c.path(),
-		Message: errors.NewMessage(format, args),
+		Message: errors.NewMessagef(format, args...),
 	}
 	c.errs = errors.Append(c.errs, err)
 	return &adt.Bottom{Err: err}
@@ -144,6 +155,10 @@ type frame struct {
 	field ast.Decl
 	// scope   map[ast.Node]bool
 	upCount int32 // 1 for field, 0 for embedding.
+
+	// isComprehensionVar indicates that this scope refers to a for clause
+	// that is part of a comprehension embedded in a struct.
+	isComprehensionVar bool
 
 	aliases map[string]aliasEntry
 }
@@ -400,6 +415,11 @@ func (c *compiler) resolve(n *ast.Ident) adt.Expr {
 		switch f := n.Node.(type) {
 		case *ast.Field:
 			_ = c.lookupAlias(k, f.Label.(*ast.Alias).Ident) // mark as used
+			// The expression of field Label is always done in the same
+			// Environment as pointed to by the UpCount of the DynamicReference
+			// and the evaluation of a DynamicReference assumes this.
+			// We therefore set the UpCount of the LabelReference to 0.
+			label.UpCount = 0
 			return &adt.DynamicReference{
 				Src:     n,
 				UpCount: upCount,
@@ -421,7 +441,10 @@ func (c *compiler) resolve(n *ast.Ident) adt.Expr {
 
 	k := len(c.stack) - 1
 	for ; k >= 0; k-- {
-		if c.stack[k].scope == n.Scope {
+		if f := c.stack[k]; f.scope == n.Scope {
+			if f.isComprehensionVar {
+				c.refersToForVariable = true
+			}
 			break
 		}
 		upCount += c.stack[k].upCount
@@ -577,27 +600,13 @@ func (c *compiler) decl(d ast.Decl) adt.Decl {
 				return c.errf(x, "cannot use _ as label")
 			}
 
-			// TODO(legacy): remove: old-school definitions
-			if x.Token == token.ISA && !label.IsDef() {
-				name, isIdent, err := ast.LabelName(lab)
-				if err == nil && isIdent {
-					idx := c.index.StringToIndex(name)
-					label, _ = adt.MakeLabel(x, idx, adt.DefinitionLabel)
-				}
-			}
+			t, _ := internal.ConstraintToken(x)
 
-			if x.Optional == token.NoPos {
-				return &adt.Field{
-					Src:   x,
-					Label: label,
-					Value: value,
-				}
-			} else {
-				return &adt.OptionalField{
-					Src:   x,
-					Label: label,
-					Value: value,
-				}
+			return &adt.Field{
+				Src:     x,
+				Label:   label,
+				ArcType: adt.ConstraintFromToken(t),
+				Value:   value,
 			}
 
 		case *ast.ListLit:
@@ -622,23 +631,23 @@ func (c *compiler) decl(d ast.Decl) adt.Decl {
 			}
 
 		case *ast.ParenExpr:
-			if x.Token == token.ISA {
-				c.errf(x, "definitions not supported for dynamic fields")
-			}
+			t, _ := internal.ConstraintToken(x)
+
 			return &adt.DynamicField{
-				Src:   x,
-				Key:   c.expr(l),
-				Value: value,
+				Src:     x,
+				Key:     c.expr(l),
+				ArcType: adt.ConstraintFromToken(t),
+				Value:   value,
 			}
 
 		case *ast.Interpolation:
-			if x.Token == token.ISA {
-				c.errf(x, "definitions not supported for interpolations")
-			}
+			t, _ := internal.ConstraintToken(x)
+
 			return &adt.DynamicField{
-				Src:   x,
-				Key:   c.expr(l),
-				Value: value,
+				Src:     x,
+				Key:     c.expr(l),
+				ArcType: adt.ConstraintFromToken(t),
+				Value:   value,
 			}
 		}
 
@@ -653,12 +662,18 @@ func (c *compiler) decl(d ast.Decl) adt.Decl {
 		// In practice this amounts to the same thing, as let expressions cannot
 		// be addressed from outside their scope. But it will matter once
 		// expressions may refer to a let from within the let.
+
+		savedUses := c.refersToForVariable
+		c.refersToForVariable = false
 		value := c.labeledExpr(x, (*letScope)(x), x.Expr)
+		refsCompVar := c.refersToForVariable
+		c.refersToForVariable = savedUses || refsCompVar
 
 		return &adt.LetField{
-			Src:   x,
-			Label: entry.feature,
-			Value: value,
+			Src:     x,
+			Label:   entry.feature,
+			IsMulti: refsCompVar,
+			Value:   value,
 		}
 
 	// case: *ast.Alias: // TODO(value alias)
@@ -676,7 +691,7 @@ func (c *compiler) decl(d ast.Decl) adt.Decl {
 		}
 
 	case *ast.Comprehension:
-		return c.comprehension(x)
+		return c.comprehension(x, false)
 
 	case *ast.EmbedDecl: // Deprecated
 		return c.expr(x.Expr)
@@ -720,7 +735,7 @@ func (c *compiler) elem(n ast.Expr) adt.Elem {
 		}
 
 	case *ast.Comprehension:
-		return c.comprehension(x)
+		return c.comprehension(x, true)
 
 	case ast.Expr:
 		return c.expr(x)
@@ -728,7 +743,7 @@ func (c *compiler) elem(n ast.Expr) adt.Elem {
 	return nil
 }
 
-func (c *compiler) comprehension(x *ast.Comprehension) adt.Elem {
+func (c *compiler) comprehension(x *ast.Comprehension, inList bool) adt.Elem {
 	var a []adt.Yielder
 	for _, v := range x.Clauses {
 		switch x := v.(type) {
@@ -743,8 +758,9 @@ func (c *compiler) comprehension(x *ast.Comprehension) adt.Elem {
 				Value:  c.label(x.Value),
 				Src:    c.expr(x.Source),
 			}
-			c.pushScope((*forScope)(x), 1, v)
+			f := c.pushScope((*forScope)(x), 1, v)
 			defer c.popScope()
+			f.isComprehensionVar = !inList
 			a = append(a, y)
 
 		case *ast.IfClause:
@@ -755,13 +771,22 @@ func (c *compiler) comprehension(x *ast.Comprehension) adt.Elem {
 			a = append(a, y)
 
 		case *ast.LetClause:
+			// Check if any references in the expression refer to a for
+			// comprehension.
+			savedUses := c.refersToForVariable
+			c.refersToForVariable = false
+			expr := c.expr(x.Expr)
+			refsCompVar := c.refersToForVariable
+			c.refersToForVariable = savedUses || refsCompVar
+
 			y := &adt.LetClause{
 				Src:   x,
 				Label: c.label(x.Ident),
-				Expr:  c.expr(x.Expr),
+				Expr:  expr,
 			}
-			c.pushScope((*letScope)(x), 1, v)
+			f := c.pushScope((*letScope)(x), 1, v)
 			defer c.popScope()
+			f.isComprehensionVar = !inList && refsCompVar
 			a = append(a, y)
 		}
 
@@ -819,6 +844,16 @@ func (c *compiler) expr(expr ast.Expr) adt.Expr {
 		return nil
 	case *ast.Ident:
 		return c.resolve(n)
+
+	case *ast.Func:
+		// We don't yet support function types natively in
+		// CUE.  ast.Func exists only to support external
+		// interpreters. Function values (really, adt.Builtin)
+		// are only created by the runtime, or injected by
+		// external interpreters.
+		//
+		// TODO: revise this when we add function types.
+		return c.resolve(ast.NewIdent("_"))
 
 	case *ast.StructLit:
 		c.pushScope(nil, 1, n)

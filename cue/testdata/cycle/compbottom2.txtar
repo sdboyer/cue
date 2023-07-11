@@ -263,15 +263,15 @@ nestedChain: {
 	}
 }
 -- out/eval/stats --
-Leaks:  3
-Freed:  141
-Reused: 132
-Allocs: 12
-Retain: 35
+Leaks:  1
+Freed:  150
+Reused: 141
+Allocs: 10
+Retain: 76
 
-Unifications: 144
-Conjuncts:    159
-Disjuncts:    163
+Unifications: 151
+Conjuncts:    164
+Disjuncts:    205
 -- out/eval --
 (struct){
   self: (struct){
@@ -279,10 +279,6 @@ Disjuncts:    163
       a: (_|_){
         // [cycle] self.fail.a: cycle with field a.b:
         //     ./in.cue:6:7
-        b: (_|_){
-          // [cycle] self.fail.a: cycle with field a.b:
-          //     ./in.cue:6:7
-        }
       }
     }
     isConcreteFail: (struct){
@@ -317,8 +313,10 @@ Disjuncts:    163
         //     ./mutual.cue:9:10
         foo: (string){ "" }
       }
-      a: (struct){
-        bar: (_|_){
+      a: (_|_){
+        // [cycle] mutual.mutualCycleFail.a: cycle with field b.foo:
+        //     ./mutual.cue:9:10
+        bar*: (_|_){
           // [cycle] mutual.mutualCycleFail.a: cycle with field b.foo:
           //     ./mutual.cue:9:10
         }
@@ -408,6 +406,8 @@ Disjuncts:    163
         foo: (struct){
           a: (int){ 1 }
         }
+        raises?: (struct){
+        }
       }
       b: (struct){
         foo: (struct){
@@ -415,6 +415,8 @@ Disjuncts:    163
         }
         ret: (struct){
           a: (int){ 1 }
+        }
+        raises?: (struct){
         }
       }
     }
@@ -425,6 +427,8 @@ Disjuncts:    163
           //     ./mutualsamestruct.cue:30:6
           ret: (struct){
             a: (int){ 1 }
+          }
+          raises?: (struct){
           }
         }
         p2: (_|_){
@@ -479,9 +483,16 @@ Disjuncts:    163
     }
     defCloseSuccess: (struct){
       #Example: (#struct){
+        ret?: (_){ _ }
+        raises?: (#struct){
+          runtime?: (string){ string }
+        }
       }
       expr: (#struct){
         ret: (int){ 2 }
+        raises?: (#struct){
+          runtime?: (string){ string }
+        }
       }
     }
   }
@@ -492,10 +503,6 @@ Disjuncts:    163
       #E: (_|_){
         // [cycle] nestedChain.cycleFail: cycle with field #E.y:
         //     ./nestedchain.cue:7:6
-        x: (_|_){
-          // [cycle] nestedChain.cycleFail: cycle with field #E.y:
-          //     ./nestedchain.cue:7:6
-        }
       }
     }
     brokenCycleSuccess: (struct){
@@ -511,10 +518,6 @@ Disjuncts:    163
         // [cycle] nestedChain.doubleAddfail: cycle with field #E.y:
         //     ./nestedchain.cue:28:6
         y: (bool){ true }
-        x: (_|_){
-          // [cycle] nestedChain.doubleAddfail: cycle with field #E.y:
-          //     ./nestedchain.cue:28:6
-        }
       }
     }
     trippleSuccess: (struct){

@@ -16,6 +16,7 @@ package load
 
 import (
 	"os"
+	"path/filepath"
 	"reflect"
 	"testing"
 
@@ -23,19 +24,32 @@ import (
 	"cuelang.org/go/cue/token"
 )
 
-const testdata = "./testdata/"
+func testMod(dir string) string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		panic(err)
+	}
+	return filepath.Join(cwd, "testdata", dir)
+}
 
 func getInst(pkg, cwd string) (*build.Instance, error) {
-	c, _ := (&Config{Dir: cwd}).complete()
+	// Set ModuleRoot to cwd as well; otherwise we walk the parent directories
+	// all the way to the root of the git repository, causing Go's test caching
+	// to never kick in, as the .git directory almost always changes.
+	// Moreover, it's extra work that isn't useful to the tests.
+	c, _ := (&Config{ModuleRoot: cwd, Dir: cwd}).complete()
 	l := loader{cfg: c}
-	inst := c.newRelInstance(token.NoPos, pkg, c.Package)
+	inst := l.newRelInstance(token.NoPos, pkg, c.Package)
 	p := l.importPkg(token.NoPos, inst)[0]
 	return p, p.Err
 }
 
 func TestEmptyImport(t *testing.T) {
-	p, err := getInst("", "")
-	if err == nil {
+	c, _ := (&Config{}).complete()
+	l := loader{cfg: c}
+	inst := l.newInstance(token.NoPos, "")
+	p := l.importPkg(token.NoPos, inst)[0]
+	if p.Err == nil {
 		t.Fatal(`Import("") returned nil error.`)
 	}
 	if p == nil {
@@ -47,17 +61,19 @@ func TestEmptyImport(t *testing.T) {
 }
 
 func TestEmptyFolderImport(t *testing.T) {
-	_, err := getInst(".", testdata+"empty")
+	path := filepath.Join(testMod("testmod"), "empty")
+	_, err := getInst(".", path)
 	if _, ok := err.(*NoFilesError); !ok {
-		t.Fatal(`Import("testdata/empty") did not return NoCUEError.`)
+		t.Fatalf(`Import(%q) did not return NoCUEError.`, path)
 	}
 }
 
 func TestMultiplePackageImport(t *testing.T) {
-	_, err := getInst(".", testdata+"multi")
+	path := filepath.Join(testMod("testmod"), "multi")
+	_, err := getInst(".", path)
 	mpe, ok := err.(*MultiplePackageError)
 	if !ok {
-		t.Fatal(`Import("testdata/multi") did not return MultiplePackageError.`)
+		t.Fatalf(`Import(%q) did not return MultiplePackageError.`, path)
 	}
 	mpe.Dir = ""
 	want := &MultiplePackageError{

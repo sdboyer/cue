@@ -29,14 +29,15 @@ type Dependency struct {
 	// Reference is the expression that referenced the node.
 	Reference adt.Resolver
 
+	pkg *adt.ImportReference
+
 	top bool
 }
 
 // Import returns the import reference or nil if the reference was within
 // the same package as the visited Vertex.
 func (d *Dependency) Import() *adt.ImportReference {
-	x, _ := d.Reference.(adt.Expr)
-	return importRef(x)
+	return d.pkg
 }
 
 // IsRoot reports whether the dependency is referenced by the root of the
@@ -67,28 +68,32 @@ type VisitFunc func(Dependency) error
 
 // Visit calls f for all vertices referenced by the conjuncts of n without
 // descending into the elements of list or fields of structs. Only references
-// that do not refer to the conjuncts of n itself are reported.
-func Visit(c *adt.OpContext, n *adt.Vertex, f VisitFunc) error {
-	return visit(c, n, f, false, true)
+// that do not refer to the conjuncts of n itself are reported. pkg indicates
+// the the package within which n is contained, which is used for reporting
+// purposes. It may be nil, indicating the main package.
+func Visit(c *adt.OpContext, pkg *adt.ImportReference, n *adt.Vertex, f VisitFunc) error {
+	return visit(c, pkg, n, f, false, true)
 }
 
 // VisitAll calls f for all vertices referenced by the conjuncts of n including
 // those of descendant fields and elements. Only references that do not refer to
-// the conjuncts of n itself are reported.
-func VisitAll(c *adt.OpContext, n *adt.Vertex, f VisitFunc) error {
-	return visit(c, n, f, true, true)
+// the conjuncts of n itself are reported. pkg indicates the current
+// package, which is used for reporting purposes.
+func VisitAll(c *adt.OpContext, pkg *adt.ImportReference, n *adt.Vertex, f VisitFunc) error {
+	return visit(c, pkg, n, f, true, true)
 }
 
 // VisitFields calls f for n and all its descendent arcs that have a conjunct
 // that originates from a conjunct in n. Only the conjuncts of n that ended up
 // as a conjunct in an actual field are visited and they are visited for each
-// field in which the occurs.
-func VisitFields(c *adt.OpContext, n *adt.Vertex, f VisitFunc) error {
+// field in which the occurs. pkg indicates the current package, which is
+// used for reporting purposes.
+func VisitFields(c *adt.OpContext, pkg *adt.ImportReference, n *adt.Vertex, f VisitFunc) error {
 	m := marked{}
 
 	m.markExpr(n)
 
-	dynamic(c, n, f, m, true)
+	dynamic(c, pkg, n, f, m, true)
 	return nil
 }
 
@@ -97,10 +102,10 @@ var empty *adt.Vertex
 func init() {
 	// TODO: Consider setting a non-nil BaseValue.
 	empty = &adt.Vertex{}
-	empty.UpdateStatus(adt.Finalized)
+	empty.ForceDone()
 }
 
-func visit(c *adt.OpContext, n *adt.Vertex, f VisitFunc, all, top bool) (err error) {
+func visit(c *adt.OpContext, pkg *adt.ImportReference, n *adt.Vertex, f VisitFunc, all, top bool) (err error) {
 	if c == nil {
 		panic("nil context")
 	}
@@ -108,6 +113,7 @@ func visit(c *adt.OpContext, n *adt.Vertex, f VisitFunc, all, top bool) (err err
 		ctxt:  c,
 		visit: f,
 		node:  n,
+		pkg:   pkg,
 		all:   all,
 		top:   top,
 	}
@@ -136,6 +142,7 @@ type visitor struct {
 	visit VisitFunc
 	node  *adt.Vertex
 	err   error
+	pkg   *adt.ImportReference
 	all   bool
 	top   bool
 }
@@ -218,7 +225,45 @@ func (c *visitor) markResolver(env *adt.Environment, r adt.Resolver) {
 	// Note: it is okay to pass an empty CloseInfo{} here as we assume that
 	// all nodes are finalized already and we need neither closedness nor cycle
 	// checks.
-	if ref, _ := c.ctxt.Resolve(adt.MakeConjunct(env, r, adt.CloseInfo{}), r); ref != nil {
+	ref, _ := c.ctxt.Resolve(adt.MakeConjunct(env, r, adt.CloseInfo{}), r)
+
+	// If a vertex is dynamic, for instance the result of {foo: 1}.foo,
+	// then it means there is no valid path to the returned value and
+	// it is pointless to mark dependencies. Instead, we mark dependencies
+	// for the LHS of selector or index references.
+	var expr adt.Expr
+	if ref != nil && isDynamic(ref) {
+		switch x := r.(type) {
+		case *adt.SelectorExpr:
+			expr = x.X
+		case *adt.IndexExpr:
+			expr = x.X
+		}
+	}
+	// TODO: consider the case where an inlined composite literal does not
+	// resolve, but has references. For instance, {a: k, ref}.b would result
+	// in a failure during evaluation if b is not defined within ref. However,
+	// ref might still specialize to allow b.
+	if expr != nil {
+		// Within a dynamic struct, we always process all references,
+		// As these references will otherwise not be visited as part of
+		// a normal traversal as they have no path from the root to reach them.
+
+		// TODO: this probably processes more references than necessary.
+		// Consider:
+		//	x: {
+		//		foo: ref1
+		//		bar: ref2
+		//	}.bar
+		// In this case ref1 should probably not be processed.
+		saved := c.all
+		c.all = true
+		c.markExpr(env, expr)
+		c.all = saved
+		return
+	}
+
+	if ref != nil {
 		// If ref is within a let, we only care about dependencies referred to
 		// by internal expressions. The let expression itself is not considered
 		// a dependency and is considered part of the referring expression.
@@ -233,9 +278,15 @@ func (c *visitor) markResolver(env *adt.Environment, r adt.Resolver) {
 		}
 
 		if ref != c.node && ref != empty {
+			pkg := importRef(r.(adt.Expr)) // All resolvers are expressions.
+			if pkg == nil {
+				pkg = c.pkg
+			}
+
 			d := Dependency{
 				Node:      ref,
 				Reference: r,
+				pkg:       pkg,
 				top:       c.top,
 			}
 			if err := c.visit(d); err != nil {
@@ -250,7 +301,7 @@ func (c *visitor) markResolver(env *adt.Environment, r adt.Resolver) {
 	// It is possible that a reference cannot be resolved because it is
 	// incomplete. In this case, we should check whether subexpressions of the
 	// reference can be resolved to mark those dependencies. For instance,
-	// prefix paths of selectors and the value or index of an index experssion
+	// prefix paths of selectors and the value or index of an index expression
 	// may independently resolve to a valid dependency.
 
 	switch x := r.(type) {
@@ -267,10 +318,21 @@ func (c *visitor) markResolver(env *adt.Environment, r adt.Resolver) {
 }
 
 // TODO(perf): make this available as a property of vertices to avoid doing
-// these dynamic lookups.
+// work repeatedly.
 func hasLetParent(v *adt.Vertex) bool {
 	for ; v != nil; v = v.Parent {
 		if v.Label.IsLet() {
+			return true
+		}
+	}
+	return false
+}
+
+// TODO(perf): make this available as a property of vertices to avoid doing
+// work repeatedly.
+func isDynamic(v *adt.Vertex) bool {
+	for ; v != nil; v = v.Parent {
+		if v.IsDynamic {
 			return true
 		}
 	}
@@ -289,11 +351,6 @@ func (c *visitor) markSubExpr(env *adt.Environment, x adt.Expr) {
 func (c *visitor) markDecl(env *adt.Environment, d adt.Decl) {
 	switch x := d.(type) {
 	case *adt.Field:
-		c.markSubExpr(env, x.Value)
-
-	case *adt.OptionalField:
-		// when dynamic, only continue if there is evidence of
-		// the field in the parallel actual evaluation.
 		c.markSubExpr(env, x.Value)
 
 	case *adt.BulkOptionalField:

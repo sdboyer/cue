@@ -1,14 +1,16 @@
 package goreleaser
 
 import (
+	"encoding/yaml"
 	"path"
 	"strings"
-	"encoding/yaml"
 
 	"tool/file"
 	"tool/exec"
 	"tool/os"
 	"tool/cli"
+
+	"cuelang.org/go/internal/ci/repo"
 )
 
 command: release: {
@@ -16,11 +18,8 @@ command: release: {
 
 	let _env = env
 
-	let _githubActions = env.GITHUB_ACTIONS | "" // "true" if running in CI
-	let _githubRef = path.Base(env.GITHUB_REF | "refs/tags/<not a github release>")
-
-	// Only run the full release as part of GitHub actions
-	let snapshot = [ if _githubActions != "true" {"--snapshot"}, ""][0]
+	let _githubRef = env.GITHUB_REF | "refs/no_ref_kind/not_a_release" // filled when running in CI
+	let _githubRefName = path.Base(_githubRef)
 
 	tempDir: file.MkdirTemp & {
 		path: string
@@ -55,11 +54,23 @@ command: release: {
 		stdout: string
 	}
 
+	let goreleaserCmd = [
+		"goreleaser", "release", "-f", "-", "--clean",
+
+		// Only run the full release when running on GitHub actions for a release tag.
+		// Keep in sync with repo.releaseTagPattern, which is a globbing pattern
+		// rather than a regular expression.
+		if _githubRef !~ "refs/tags/\(repo.releaseTagPrefix).*" {
+			"--snapshot"
+		},
+	]
+
 	info: cli.Print & {
 		text: """
-			snapshot: \(snapshot)
 			latest CUE version: \(latestCUEVersion)
-			release version: \(_githubRef)
+			git ref: \(_githubRef)
+			release name: \(_githubRefName)
+			goreleaser cmd: \(strings.Join(goreleaserCmd, " "))
 			"""
 	}
 
@@ -68,12 +79,12 @@ command: release: {
 
 		// Set the goreleaser configuration to be stdin
 		stdin: yaml.Marshal(config & {
-			#latest: path.Base(_githubRef) == strings.TrimSpace(latestCUE.stdout)
+			#latest: _githubRefName == strings.TrimSpace(latestCUE.stdout)
 		})
 
 		// Run at the root of the module
 		dir: strings.TrimSpace(cueModRoot.stdout)
 
-		cmd: ["goreleaser", "release", "-f", "-", "--rm-dist", snapshot]
+		cmd: goreleaserCmd
 	}
 }
