@@ -32,9 +32,11 @@ func ConvertToRuntime(c *cue.Context) *cue.Runtime {
 	return (*cue.Runtime)(c)
 }
 
-func ConvertToContext(r *cue.Runtime) *cue.Context {
-	(*runtime.Runtime)(r).Init()
-	return (*cue.Context)(r)
+func ConvertToContext[Ctx *cue.Runtime | *cue.Context](ctx Ctx) *cue.Context {
+	if ctx, ok := any(ctx).(*cue.Runtime); ok {
+		(*runtime.Runtime)(ctx).Init()
+	}
+	return (*cue.Context)(ctx)
 }
 
 func ToInternal(v cue.Value) (*runtime.Runtime, *adt.Vertex) {

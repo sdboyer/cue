@@ -117,8 +117,24 @@ func (p *Profile) Def(r adt.Runtime, pkgID string, v *adt.Vertex) (f *ast.File, 
 
 	expr := e.expr(nil, v)
 
-	if isDef {
+	switch isDef {
+	case true:
 		e.inDefinition--
+
+		// This eliminates the need to wrap in _#def in the most common cases,
+		// while ensuring only one level of _#def wrapping is ever used.
+		if st, ok := expr.(*ast.StructLit); ok {
+			for _, elem := range st.Elts {
+				if d, ok := elem.(*ast.EmbedDecl); ok {
+					if isDefinitionReference(d.Expr) {
+						return e.finalize(v, expr)
+					}
+				}
+			}
+		}
+
+		// TODO: embed an empty definition instead once we verify that this
+		// preserves semantics.
 		if v.Kind() == adt.StructKind {
 			expr = ast.NewStruct(
 				ast.Embed(ast.NewIdent("_#def")),
@@ -128,6 +144,23 @@ func (p *Profile) Def(r adt.Runtime, pkgID string, v *adt.Vertex) (f *ast.File, 
 	}
 
 	return e.finalize(v, expr)
+}
+
+func isDefinitionReference(x ast.Expr) bool {
+	switch x := x.(type) {
+	case *ast.Ident:
+		if internal.IsDef(x.Name) {
+			return true
+		}
+	case *ast.SelectorExpr:
+		if internal.IsDefinition(x.Sel) {
+			return true
+		}
+		return isDefinitionReference(x.X)
+	case *ast.IndexExpr:
+		return isDefinitionReference(x.X)
+	}
+	return false
 }
 
 // Expr exports the given unevaluated expression (schema mode).
@@ -246,12 +279,19 @@ type exporter struct {
 	usedFeature map[adt.Feature]adt.Expr
 	labelAlias  map[adt.Expr]adt.Feature
 	valueAlias  map[*ast.Alias]*ast.Alias
-	letAlias    map[*ast.LetClause]*ast.LetClause
-	references  map[*adt.Vertex]*referenceInfo
+	// fieldAlias is used to track original alias names of regular fields.
+	fieldAlias map[*ast.Field]fieldAndScope
+	letAlias   map[*ast.LetClause]*ast.LetClause
+	references map[*adt.Vertex]*referenceInfo
 
 	usedHidden map[string]bool
 
 	pivotter *pivotter
+}
+
+type fieldAndScope struct {
+	field *ast.Field
+	scope ast.Node // StructLit or File
 }
 
 // referenceInfo is used to track which Field.Value fields should be linked
@@ -410,16 +450,17 @@ func setFieldAlias(f *ast.Field, name string) {
 	}
 }
 
-func (e *exporter) markLets(n ast.Node) {
+func (e *exporter) markLets(n ast.Node, scope *ast.StructLit) {
 	if n == nil {
 		return
 	}
 	ast.Walk(n, func(n ast.Node) bool {
 		switch v := n.(type) {
 		case *ast.StructLit:
-			e.markLetDecls(v.Elts)
+			e.markLetDecls(v.Elts, scope)
 		case *ast.File:
-			e.markLetDecls(v.Decls)
+			e.markLetDecls(v.Decls, scope)
+			// TODO: return true here and false for everything else?
 
 		case *ast.Field,
 			*ast.LetClause,
@@ -432,11 +473,54 @@ func (e *exporter) markLets(n ast.Node) {
 	}, nil)
 }
 
-func (e *exporter) markLetDecls(decls []ast.Decl) {
+func (e *exporter) markLetDecls(decls []ast.Decl, scope *ast.StructLit) {
 	for _, d := range decls {
-		if let, ok := d.(*ast.LetClause); ok {
-			e.markLetAlias(let)
+		switch x := d.(type) {
+		case *ast.Field:
+			e.prepareAliasedField(x, scope)
+		case *ast.LetClause:
+			e.markLetAlias(x)
 		}
+	}
+}
+
+// prepareAliasField creates an aliased ast.Field. It is done so before
+// recursively processing any of the fields so that a processed field that
+// occurs earlier in a struct can already refer to it.
+//
+// It is assumed that the same alias names can be used. We rely on Sanitize
+// to do any renaming of aliases in case of shadowing.
+func (e *exporter) prepareAliasedField(f *ast.Field, scope ast.Node) {
+	if _, ok := e.fieldAlias[f]; ok {
+		return
+	}
+
+	alias, ok := f.Label.(*ast.Alias)
+	if !ok {
+		return // not aliased
+	}
+	field := &ast.Field{
+		Label: &ast.Alias{
+			Ident: ast.NewIdent(alias.Ident.Name),
+			Expr:  alias.Expr,
+		},
+	}
+
+	if e.fieldAlias == nil {
+		e.fieldAlias = make(map[*ast.Field]fieldAndScope)
+	}
+
+	e.fieldAlias[f] = fieldAndScope{field: field, scope: scope}
+}
+
+func (e *exporter) getFixedField(f *adt.Field) *ast.Field {
+	if f.Src != nil {
+		if entry, ok := e.fieldAlias[f.Src]; ok {
+			return entry.field
+		}
+	}
+	return &ast.Field{
+		Label: e.stringLabel(f.Label),
 	}
 }
 

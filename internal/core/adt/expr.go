@@ -759,7 +759,7 @@ func (x *LabelReference) evaluate(ctx *OpContext, state vertexStatus) Value {
 	return label.ToValue(ctx)
 }
 
-// A DynamicReference is like a LabelReference, but with a computed label.
+// A DynamicReference is like a FieldReference, but with a computed label.
 //
 // Example: an X referring to
 //
@@ -788,7 +788,7 @@ func (x *DynamicReference) Source() ast.Node {
 }
 
 func (x *DynamicReference) EvaluateLabel(ctx *OpContext, env *Environment) Feature {
-	env = env.up(x.UpCount)
+	env = env.up(ctx, x.UpCount)
 	frame := ctx.PushState(env, x.Src)
 	v := ctx.value(x.Label, partial)
 	ctx.PopState(frame)
@@ -1863,8 +1863,19 @@ func (x *ForClause) yield(s *compState) {
 	}
 	n.LockArcs = true
 	for _, a := range n.Arcs {
-		if !a.Label.IsRegular() || !a.IsDefined(c) {
+		if !a.Label.IsRegular() {
 			continue
+		}
+		if !a.isDefined() {
+			a.Finalize(c)
+			switch a.ArcType {
+			case ArcMember:
+			case ArcRequired:
+				c.AddBottom(newRequiredFieldInComprehensionError(c, x, a))
+				continue
+			default:
+				continue
+			}
 		}
 
 		c.unify(a, partial)
