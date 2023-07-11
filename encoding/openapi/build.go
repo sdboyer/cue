@@ -38,14 +38,15 @@ type buildContext struct {
 	path      []cue.Selector
 	errs      errors.Error
 
-	expandRefs    bool
-	structural    bool
-	exclusiveBool bool
-	nameFunc      func(inst cue.Value, path cue.Path) string
-	descFunc      func(v cue.Value) string
-	fieldFilter   *regexp.Regexp
-	evalDepth     int // detect cycles when resolving references
-	maxCycleDepth int
+	expandRefs                bool
+	structural                bool
+	exclusiveBool             bool
+	nameFunc                  func(inst cue.Value, path cue.Path) string
+	descFunc                  func(v cue.Value) string
+	fieldFilter               *regexp.Regexp
+	evalDepth                 int // detect cycles when resolving references
+	maxCycleDepth             int
+	removeNullableBoundValues bool
 
 	schemas *OrderedMap
 
@@ -102,17 +103,18 @@ func schemas(g *Generator, inst cue.InstanceOrValue) (schemas *ast.StructLit, er
 	}
 
 	c := &buildContext{
-		inst:          val,
-		instExt:       val,
-		refPrefix:     "components/schemas",
-		expandRefs:    g.ExpandReferences,
-		structural:    g.ExpandReferences,
-		nameFunc:      g.NameFunc,
-		descFunc:      g.DescriptionFunc,
-		schemas:       &OrderedMap{},
-		externalRefs:  map[string]*externalType{},
-		fieldFilter:   fieldFilter,
-		maxCycleDepth: g.MaxCycleDepth,
+		inst:                      val,
+		instExt:                   val,
+		refPrefix:                 "components/schemas",
+		expandRefs:                g.ExpandReferences,
+		structural:                g.ExpandReferences,
+		nameFunc:                  g.NameFunc,
+		descFunc:                  g.DescriptionFunc,
+		schemas:                   &OrderedMap{},
+		externalRefs:              map[string]*externalType{},
+		fieldFilter:               fieldFilter,
+		maxCycleDepth:             g.MaxCycleDepth,
+		removeNullableBoundValues: g.RemoveNullableBoundValues,
 	}
 	if g.ReferenceFunc != nil {
 		if !isInstance {
@@ -956,7 +958,9 @@ func (b *builder) number(v cue.Value) {
 		}
 
 	case cue.LessThanEqualOp:
-		b.setFilter("Schema", "maximum", b.big(a[0]))
+		if !b.ctx.removeNullableBoundValues {
+			b.setFilter("Schema", "maximum", b.big(a[0]))
+		}
 
 	case cue.GreaterThanOp:
 		if b.ctx.exclusiveBool {
@@ -967,7 +971,9 @@ func (b *builder) number(v cue.Value) {
 		}
 
 	case cue.GreaterThanEqualOp:
-		b.setFilter("Schema", "minimum", b.big(a[0]))
+		if !b.ctx.removeNullableBoundValues {
+			b.setFilter("Schema", "minimum", b.big(a[0]))
+		}
 
 	case cue.NotEqualOp:
 		i := b.big(a[0])

@@ -90,6 +90,10 @@ type Config struct {
 	//
 	// NOTE This option does not exist in canonical cue-lang/cue.
 	MaxCycleDepth int
+
+	// RemoveNullableBoundValues is used to avoid to set "minimum" and "maximum" values for
+	// numbers that allow null values
+	RemoveNullableBoundValues bool
 }
 
 type Generator = Config
