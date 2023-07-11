@@ -22,7 +22,6 @@ import (
 	"fmt"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"unicode"
 	"unicode/utf8"
 
@@ -109,7 +108,7 @@ type Mode uint
 // These constants are options to the Init function.
 const (
 	ScanComments     Mode = 1 << iota // return comments as COMMENT tokens
-	dontInsertCommas                  // do not automatically insert commas - for testing only
+	DontInsertCommas                  // do not automatically insert commas
 )
 
 // Init prepares the scanner s to tokenize the text src by setting the
@@ -246,10 +245,6 @@ func (s *Scanner) scanIdentifier() string {
 		s.next()
 	}
 	return string(s.src[offs:s.offset])
-}
-
-func isExtendedIdent(r rune) bool {
-	return strings.IndexRune("-_#$%. ", r) >= 0
 }
 
 func digitVal(ch rune) int {
@@ -649,6 +644,11 @@ func (s *Scanner) ResumeInterpolation() string {
 	return str
 }
 
+// Offset returns the current position offset.
+func (s *Scanner) Offset() int {
+	return s.offset
+}
+
 // Scan scans the next token and returns the token position, the token,
 // and its literal string if applicable. The source end is indicated by
 // EOF.
@@ -942,7 +942,7 @@ scanAgain:
 			lit = string(ch)
 		}
 	}
-	if s.mode&dontInsertCommas == 0 {
+	if s.mode&DontInsertCommas == 0 {
 		s.insertEOL = insertEOL
 	}
 

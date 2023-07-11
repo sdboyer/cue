@@ -31,6 +31,7 @@ import (
 	"cuelang.org/go/internal/astinternal"
 	"cuelang.org/go/internal/core/adt"
 	"cuelang.org/go/internal/core/debug"
+	"cuelang.org/go/internal/core/runtime"
 	"cuelang.org/go/internal/cuetest"
 	"cuelang.org/go/internal/tdtest"
 )
@@ -803,6 +804,18 @@ func TestFields(t *testing.T) {
 	}, {
 		value: `{a!: 1, b?: 2, c: 3}`,
 		err:   "a: field is required but not present",
+	}, {
+		opts:  []Option{Hidden(true)},
+		value: `1, _a: 2`,
+		res:   `{_a:2,}`,
+	}, {
+		opts:  []Option{Definitions(true)},
+		value: `1, #a: 2`,
+		res:   `{#a:2,}`,
+	}, {
+		opts:  []Option{Optional(true)},
+		value: `1, a?: 2`,
+		err:   "cannot use value 1 (type int) as struct",
 	}}
 	for _, tc := range testCases {
 		t.Run(tc.value, func(t *testing.T) {
@@ -830,14 +843,14 @@ func TestFields(t *testing.T) {
 				want, err := iter.Value().MarshalJSON()
 				checkFatal(t, err, tc.err, "Obj.At2")
 
-				got, err := obj.Lookup(iter.Label()).MarshalJSON()
+				got, err := obj.LookupPath(MakePath(iter.Selector())).MarshalJSON()
 				checkFatal(t, err, tc.err, "Obj.At2")
 
 				if !bytes.Equal(got, want) {
 					t.Errorf("Lookup: got %q; want %q", got, want)
 				}
 			}
-			v := obj.Lookup("non-existing")
+			v := obj.LookupPath(MakePath(Str("non-existing")))
 			checkErr(t, v.Err(), "not found", "non-existing")
 		})
 	}
@@ -1370,8 +1383,6 @@ func TestFillPath(t *testing.T) {
 
 func TestFillPathError(t *testing.T) {
 	r := &Runtime{}
-
-	type key struct{ a int }
 
 	testCases := []struct {
 		in   string
@@ -2174,6 +2185,59 @@ func TestUnify(t *testing.T) {
 		x := v.LookupPath(ParsePath(tc.pathA))
 		y := v.LookupPath(ParsePath(tc.pathB))
 		b, err := x.Unify(y).MarshalJSON()
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Equal(string(b), tc.want)
+	})
+}
+
+func TestUnifyAccept(t *testing.T) {
+	type testCase struct {
+		value string
+		want  string
+	}
+	testCases := []testCase{{
+		value: `#v: 4, #w: 4, #accept: int`,
+		want:  `4`,
+	}, {
+		value: `#v: string, #w: "foo", #accept: string`,
+		want:  `"foo"`,
+	}, {
+		value: `#v: {a: "foo"}, #w: {b: 4}, #accept: {a: string, b: int}`,
+		want:  `{"a":"foo","b":4}`,
+	}, {
+		value: `#v: [string,  4], #w: ["foo", 4], #accept: [string, int, ...]`,
+		want:  `["foo",4]`,
+	}, {
+		value: `#v: {a: string, b: 1, _#hidden: int}, #w: {a: "foo"}, #accept: {...}`,
+		want:  `{"a":"foo","b":1}`,
+	}, {
+		// Issue #2325: let should not result in a closedness error.
+		value: `#accept: {
+			...
+		}
+		#v: {}
+		#w: {
+			let foobar = {}
+			 _fb: foobar
+		}`,
+		want: `{}`,
+	}, {
+		value: `
+		#v: #v: "foo"
+		#w: {b:1}
+		#accept: {...}
+		`,
+		want: `{"b":1}`,
+	}}
+	// TODO(tdtest): use cuetest.Run when supported.
+	tdtest.Run(t, testCases, func(t *cuetest.T, tc *testCase) {
+		v := getInstance(t.T, tc.value).Value()
+		x := v.LookupPath(ParsePath("#v"))
+		y := v.LookupPath(ParsePath("#w"))
+		a := v.LookupPath(ParsePath("#accept"))
+		b, err := x.UnifyAccept(y, a).MarshalJSON()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -3161,7 +3225,7 @@ a: x: y: z: "x"`,
 	for _, tc := range testCases {
 		t.Run("", func(t *testing.T) {
 			var c Context
-			c.runtime().Init()
+			(*runtime.Runtime)(&c).Init()
 			v := c.CompileString(tc.value)
 			v = v.LookupPath(ParsePath("a"))
 			pos := v.Pos().String()

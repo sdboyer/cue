@@ -1053,7 +1053,7 @@ Embedding       = Comprehension | AliasExpr .
 Field           = Label ":" { Label ":" } AliasExpr { attribute } .
 Label           = [ identifier "=" ] LabelExpr .
 LabelExpr       = LabelName [ "?" | "!" ] | "[" AliasExpr "]" .
-LabelName       = identifier | simple_string_lit  .
+LabelName       = identifier | simple_string_lit | "(" AliasExpr ")" .
 
 attribute       = "@" identifier "(" attr_tokens ")" .
 attr_tokens     = { attr_token |
@@ -1156,6 +1156,25 @@ h: b & { foo?: number }                _|_
 i: c & { foo: string }                 { foo: *"baz" | string }
 ```
 -->
+
+
+#### Dynamic fields
+
+A _dynamic field_ is a field whose label is determined by
+an expression wrapped in parentheses.
+A dynamic field may be marked as optional or required.
+
+```
+Expression                             Result
+a:   "foo                              a:   "foo"
+b:   "bar"                             b:   "bar"
+(a): "baz"                             bar: "baz"
+
+(a+b): "qux"                           foobar: "qux"
+
+(a)?: string                           foo?: string
+(b)!: string                           bar!: string
+```
 
 
 #### Pattern and default constraints
@@ -1575,17 +1594,29 @@ In front of a Label (`X=label: value`):
 
 - binds the identifier to the same value as `label` would be bound
   to if it were a valid identifier.
-- for optional fields (`foo?: bar` and `[foo]: bar`),
-  the bound identifier is only visible within the field value (`bar`).
+
+In front of a dynamic field (`X=(label): value`):
+
+- binds the identifier to the same value as `label` if it were a valid
+  static identifier.
+
+In front of a dynamic field expression (`(X=expr): value`):
+
+- binds the identifier to the concrete label resulting from evaluating `expr`.
+
+In front of a pattern constraint (`X=[expr]: value`):
+
+- binds the identifier to the same field as the matched by the pattern
+  within the instance of the field value (`value`).
+
+In front of a pattern constraint expression (`[X=expr]: value`):
+
+- binds the identifier to the concrete label that matches `expr`
+  within the instances of the field value (`value`).
 
 Before a value (`foo: X=x`)
 
 - binds the identifier to the value it precedes within the scope of that value.
-
-Inside a bracketed label (`[X=expr]: value`):
-
-- binds the identifier to the concrete label that matches `expr`
-  within the instances of the field value (`value`).
 
 Before a list element (`[ X=value, X+1 ]`) (Not yet implemented)
 
@@ -1992,7 +2023,6 @@ PrimaryExpr =
 	Operand |
 	PrimaryExpr Selector |
 	PrimaryExpr Index |
-	PrimaryExpr Slice |
 	PrimaryExpr Arguments .
 
 Selector       = "." (identifier | simple_string_lit) .
@@ -2009,6 +2039,7 @@ Filter         = "[" [ "?" ] AliasExpr "]" .
 
 TODO: maybe reintroduce slices, as they are useful in queries, probably this
 time with Python semantics.
+	PrimaryExpr Slice |
 Slice          = "[" [ Expression ] ":" [ Expression ] [ ":" [Expression] ] "]" .
 
 Argument       = Expression | ( identifier ":" Expression ).
@@ -2149,27 +2180,14 @@ for `a` of struct type:
 
 
 ```
-[ 1, 2 ][1]     // 2
-[ 1, 2 ][2]     // _|_
-[ 1, 2, ...][2] // _|_
-```
+a: [ 1, 2 ][1]     // 2
+b: [ 1, 2 ][2]     // _|_
+c: [ 1, 2, ...][2] // _|_
 
-<!-- TODO: Marcel says this is no longer how CUE works -->
-
-Both the operand and index value may be a value-default pair.
-```
-va[vi]              =>  va[vi]
-va[(vi, di)]        =>  (va[vi], va[di])
-(va, da)[vi]        =>  (va[vi], da[vi])
-(va, da)[(vi, di)]  =>  (va[vi], da[di])
-```
-
-```
-Fields                  Result
-x: [1, 2] | *[3, 4]     ([1,2]|[3,4], [3,4])
-i: int | *1             (int, 1)
-
-v: x[i]                 (x[i], 4)
+// Defaults are selected for both operand and index:
+x: [1, 2] | *[3, 4]
+y: int | *1
+z: x[y]  // 4
 ```
 
 ### Operators
@@ -2198,12 +2216,10 @@ other operand is not, the constant is [converted] to the type of the other
 operand.
 -->
 
-Operands of unary and binary expressions may be associated with a default using
-the following
-
-<!-- TODO: the following... what? only examples follow. -->
-
 <!--
+Operands of unary and binary expressions may be associated with a default using
+the following:
+
 ```
 O1: op (v1, d1)          => (op v1, op d1)
 
@@ -2212,7 +2228,6 @@ and because v => (v, v)
 O3: v1       op (v2, d2) => (v1 op v2, v1 op d2)
 O4: (v1, d1) op v2       => (v1 op v2, d1 op v2)
 ```
--->
 
 ```
 Field               Resulting Value-Default pair
@@ -2222,6 +2237,7 @@ b: -a               (-a, -1)
 c: a + 2            (a+2, 3)
 d: a + a            (a+a, 2)
 ```
+-->
 
 #### Operator precedence
 
@@ -2664,10 +2680,9 @@ a result of type int.
 ```
 Argument type    Result
 
-string            string length in bytes
-bytes             length of byte sequence
-list              list length, smallest length for an open list
-struct            number of distinct data fields, excluding optional
+bytes            length of byte sequence
+list             list length, smallest length for an open list
+struct           number of distinct data fields, excluding field constraints
 ```
 <!-- TODO: consider not supporting len, but instead rely on more
 precisely named builtin functions:
@@ -2681,7 +2696,7 @@ precisely named builtin functions:
 Expression           Result
 len("Hellø")         6
 len([1, 2, 3])       3
-len([1, 2, ...])     >=2
+len([1, 2, ...])     2
 ```
 
 

@@ -1366,10 +1366,6 @@ func (v Value) structValData(ctx *adt.OpContext) (structValue, *adt.Bottom) {
 	})
 }
 
-func (v Value) structValFull(ctx *adt.OpContext) (structValue, *adt.Bottom) {
-	return v.structValOpts(ctx, options{allowScalar: true})
-}
-
 // structVal returns an structVal or an error if v is not a struct.
 func (v Value) structValOpts(ctx *adt.OpContext, o options) (s structValue, err *adt.Bottom) {
 	v, _ = v.Default()
@@ -1379,10 +1375,8 @@ func (v Value) structValOpts(ctx *adt.OpContext, o options) (s structValue, err 
 	switch b, ok := v.v.BaseValue.(*adt.Bottom); {
 	case ok && b.IsIncomplete() && !o.concrete && !o.final:
 
-	// TODO:
-	// case o.allowScalar, !o.omitHidden, !o.omitDefinitions:
-	// Allow scalar values if hidden or definition fields are requested?
-	case o.allowScalar:
+	// Allow scalar values if hidden or definition fields are requested.
+	case !o.omitHidden, !o.omitDefinitions:
 	default:
 		obj, err = v.getStruct()
 		if err != nil {
@@ -1896,8 +1890,11 @@ func (v Value) Unify(w Value) Value {
 	return makeValue(v.idx, n, v.parent_)
 }
 
-// UnifyAccept is as v.Unify(w), but will disregard any field that is allowed
-// in the Value accept.
+// UnifyAccept is as v.Unify(w), but will disregard the closedness rules for
+// v and w, and will, instead, only allow fields that are present in accept.
+//
+// UnifyAccept is used to piecemeal unify individual conjuncts obtained from
+// accept without violating closedness rules.
 func (v Value) UnifyAccept(w Value, accept Value) Value {
 	if v.v == nil {
 		return w
@@ -2062,7 +2059,6 @@ type options struct {
 	ignoreClosedness  bool // used for comparing APIs
 	docs              bool
 	disallowCycles    bool // implied by concrete
-	allowScalar       bool
 }
 
 // An Option defines modes of evaluation.
@@ -2215,13 +2211,15 @@ func (o *options) updateOptions(opts []Option) {
 // exists.
 //
 // Note that by default not all errors are reported, unless options like
-// Concrete are used.
+// Concrete are used. The Final option can be used to check for missing
+// required fields.
 func (v Value) Validate(opts ...Option) error {
 	o := options{}
 	o.updateOptions(opts)
 
 	cfg := &validate.Config{
 		Concrete:       o.concrete,
+		Final:          o.final,
 		DisallowCycles: o.disallowCycles,
 		AllErrors:      true,
 	}

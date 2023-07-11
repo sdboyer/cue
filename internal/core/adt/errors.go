@@ -208,12 +208,36 @@ func CombineErrors(src ast.Node, x, y Value) *Bottom {
 
 func NewRequiredNotPresentError(ctx *OpContext, v *Vertex) *Bottom {
 	saved := ctx.PushArc(v)
+	err := ctx.Newf("field is required but not present")
+	for _, c := range v.Conjuncts {
+		if f, ok := c.x.(*Field); ok && f.ArcType == ArcRequired {
+			err.AddPosition(c.x)
+		}
+		if c.CloseInfo.closeInfo != nil {
+			err.AddPosition(c.CloseInfo.location)
+		}
+	}
+
 	b := &Bottom{
 		Code: IncompleteError,
-		Err:  ctx.Newf("field is required but not present"),
+		Err:  err,
 	}
 	ctx.PopArc(saved)
 	return b
+}
+
+func newRequiredFieldInComprehensionError(ctx *OpContext, x *ForClause, v *Vertex) *Bottom {
+	err := ctx.Newf("missing required field in for comprehension: %v", v.Label)
+	err.AddPosition(x.Src)
+	for _, c := range v.Conjuncts {
+		if f, ok := c.x.(*Field); ok && f.ArcType == ArcRequired {
+			err.AddPosition(c.x)
+		}
+	}
+	return &Bottom{
+		Code: IncompleteError,
+		Err:  err,
+	}
 }
 
 // A ValueError is returned as a result of evaluating a value.

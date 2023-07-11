@@ -101,9 +101,10 @@ type cacheKey struct {
 	Arc  *Vertex
 }
 
-func (e *Environment) up(count int32) *Environment {
+func (e *Environment) up(ctx *OpContext, count int32) *Environment {
 	for ; count > 0; count-- {
 		e = e.Up
+		ctx.Assertf(ctx.Pos(), e.Vertex != nil, "Environment.up encountered a nil vertex")
 	}
 	return e
 }
@@ -772,8 +773,7 @@ func (v *Vertex) IsClosedList() bool {
 
 // TODO: return error instead of boolean? (or at least have version that does.)
 func (v *Vertex) Accept(ctx *OpContext, f Feature) bool {
-	// TODO(v0.6): move f.IsHidden from below to here.
-	if f.IsLet() {
+	if f.IsHidden() || f.IsLet() {
 		return true
 	}
 
@@ -808,7 +808,7 @@ func (v *Vertex) Accept(ctx *OpContext, f Feature) bool {
 		}
 	}
 
-	if f.IsHidden() || !v.IsClosedStruct() || v.Lookup(f) != nil {
+	if !v.IsClosedStruct() || v.Lookup(f) != nil {
 		return true
 	}
 
