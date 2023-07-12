@@ -17,12 +17,11 @@ package openapi
 import (
 	"fmt"
 
-	"github.com/cockroachdb/apd/v3"
-
 	"cuelang.org/go/cue"
 	"cuelang.org/go/cue/ast"
 	"cuelang.org/go/cue/literal"
 	"cuelang.org/go/cue/token"
+	"github.com/cockroachdb/apd/v3"
 )
 
 // See https://github.com/OAI/OpenAPI-Specification/blob/master/versions/3.0.0.md#data-types
@@ -59,10 +58,17 @@ func extractFormat(v cue.Value) string {
 	}
 	var arg string
 
-	if op, a := v.Expr(); op == cue.CallOp {
+	op, a := v.Expr()
+
+	switch op {
+	case cue.CallOp:
 		v = a[0]
 		if len(a) == 2 {
 			arg = fmt.Sprintf(" (%v)", a[1].Eval())
+		}
+	case cue.OrOp:
+		if len(a) == 2 && a[1].Kind() == cue.NullKind {
+			v = a[0]
 		}
 	}
 
