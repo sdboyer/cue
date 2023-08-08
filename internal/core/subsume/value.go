@@ -81,6 +81,24 @@ func (s *subsumer) values(a, b adt.Value) (result bool) {
 		// TODO: this would work better if all equal nodes shared the same
 		// node link.
 		return deref(a) == deref(b)
+
+	case *adt.BuiltinValidator:
+		if x, ok := a.(*adt.BuiltinValidator); ok {
+			if x.Builtin.Name != b.Builtin.Name {
+				return false
+			}
+
+			for i, y := range b.Args {
+				if len(x.Args) <= i {
+					return false
+				}
+
+				if !s.values(x.Args[i], y) {
+					return false
+				}
+			}
+			return true
+		}
 	}
 
 	switch x := a.(type) {
